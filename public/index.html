@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Utility Tracker</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700;800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
+<script>try{if(localStorage.t?localStorage.t==='d':matchMedia('(prefers-color-scheme:dark)').matches)document.documentElement.classList.add('dark')}catch{}</script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>tailwind.config={darkMode:'class',theme:{extend:{fontFamily:{display:['"Bricolage Grotesque"','sans-serif'],sans:['Figtree','sans-serif']},colors:{ink:'#10222b',tide:'#0e6f68',volt:'#f2a900'}}}}</script>
+<style type="text/tailwindcss">
+@layer components{
+.card{@apply rounded-2xl border border-ink/10 bg-white/80 backdrop-blur dark:bg-slate-900/70 dark:border-white/10}
+.btn{@apply inline-flex items-center justify-center gap-2 rounded-xl px-4 min-h-[44px] text-sm font-semibold transition active:scale-95 border border-ink/15 dark:border-white/15 hover:bg-ink/5 dark:hover:bg-white/10 outline-none focus-visible:ring-2 focus-visible:ring-tide}
+.btn-p{@apply bg-tide text-white border-tide hover:bg-tide/90}
+.btn-d{@apply text-red-600 border-red-500/30 dark:text-red-400}
+.inp{@apply w-full rounded-xl border border-ink/15 dark:border-white/15 bg-transparent px-3 min-h-[44px] text-sm outline-none focus:ring-2 focus:ring-tide}
+.lbl{@apply block text-xs font-medium mb-1 opacity-70}
+.nav{@apply flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium opacity-70 hover:opacity-100}
+.nav.on{@apply bg-tide/15 text-tide opacity-100}
+}
+@media print{body>*:not(#slip){display:none!important}#slip{display:block!important}}
+</style>
+</head>
+<body class="font-sans bg-[#eef3f2] text-ink dark:bg-[#0b1519] dark:text-slate-100">
+<canvas id="bg" class="fixed inset-0 w-full h-full pointer-events-none opacity-60"></canvas>
+<div class="relative z-10 flex min-h-screen">
+  <aside class="hidden lg:flex w-64 shrink-0 flex-col gap-1 p-5 sticky top-0 h-screen overflow-auto">
+    <div class="font-display text-2xl font-extrabold mb-6">Utility Tracker</div>
+    <div id="sn" class="space-y-1"></div>
+    <div id="sa" class="mt-auto pt-4"></div>
+  </aside>
+  <main class="flex-1 min-w-0 p-4 sm:p-8 pb-28 lg:pb-8" style="padding-top:max(1rem,env(safe-area-inset-top))">
+    <header class="lg:hidden font-display text-lg font-extrabold mb-4">Utility Tracker</header>
+    <div id="view"><div class="card p-6 animate-pulse">Loading homes...</div></div>
+  </main>
+</div>
+<nav id="bn" class="lg:hidden fixed bottom-0 inset-x-0 z-20 grid grid-cols-4 border-t border-ink/10 dark:border-white/10 bg-white/90 dark:bg-slate-900/90 backdrop-blur" style="padding-bottom:env(safe-area-inset-bottom)"></nav>
+<div id="slip" class="hidden p-8 bg-white text-black"></div>
+
+<script>
+const $=s=>document.querySelector(s);
+const S={props:[],sum:null,view:'ov',cur:null,home:null,rate:25,manual:false,touched:false,units:0,page:0,q:'',blk:''};
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const f1=n=>(+n||0).toLocaleString('en',{maximumFractionDigits:1});
+const rs=n=>'Rs. '+(+n||0).toLocaleString('en',{maximumFractionDigits:2});
+const B=(c,t,f)=>`<button type="button" class="btn ${c}" onclick="${f}">${t}</button>`;
+const stat=(l,v,c='')=>`<div class="card p-4"><p class="text-xs opacity-70">${l}</p><p class="font-display text-xl sm:text-2xl font-extrabold ${c}">${v}</p></div>`;
+const RED='text-red-600 dark:text-red-400',LN='border-t border-ink/10 dark:border-white/10';
+let T;const deb=f=>{clearTimeout(T);T=setTimeout(f,250)};
+gsap.globalTimeline.timeScale(matchMedia('(prefers-reduced-motion:reduce)').matches?100:1);
+
+/* ---------- API + feedback ---------- */
+async function api(p,o={}){
+  let r;try{r=await fetch(p,{method:o.method||'GET',headers:o.body?{'Content-Type':'application/json'}:{},body:o.body?JSON.stringify(o.body):undefined})}
+  catch{throw Error('Cannot reach the server. Start it with: uvicorn main:app --reload')}
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok){const m=d.detail;throw Error(Array.isArray(m)?m.map(x=>x.msg.replace('Value error, ','')).join(', '):m||'Request failed')}
+  return d}
+function toast(m,e){const t=document.createElement('div');
+  t.className='fixed z-[60] right-4 left-4 sm:left-auto sm:w-80 rounded-xl px-4 py-3 text-sm font-semibold shadow-lg text-white '+(e?'bg-red-600':'bg-tide');
+  t.style.top='max(1rem,env(safe-area-inset-top))';t.textContent=m;document.body.append(t);gsap.from(t,{y:-20,opacity:0,duration:.25});
+  setTimeout(()=>gsap.to(t,{opacity:0,duration:.3,onComplete:()=>t.remove()}),e?4500:2200)}
+async function run(fn,msg){try{await fn();toast(typeof msg==='function'?msg():msg);await refresh();return true}catch(e){toast(e.message,1);return false}}
+function modal(t,h,ok,label='Save'){
+  const m=document.createElement('div');m.className='fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 sm:p-4';
+  m.innerHTML=`<form class="w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl bg-white dark:bg-slate-900 p-5 space-y-3 max-h-[90vh] overflow-auto" style="padding-bottom:max(1.25rem,env(safe-area-inset-bottom))"><h3 class="font-display text-xl font-bold">${t}</h3>${h}<div class="flex gap-2 pt-2"><button type="button" class="btn flex-1" data-x>Cancel</button><button class="btn btn-p flex-1">${label}</button></div></form>`;
+  document.body.append(m);const f=m.firstChild,close=()=>m.remove();gsap.from(f,{y:40,opacity:0,duration:.25});
+  m.onclick=e=>{if(e.target===m)close()};f.querySelector('[data-x]').onclick=close;
+  f.onsubmit=async e=>{e.preventDefault();if(await ok(f)!==false)close()}}
+
+/* ---------- Data ---------- */
+async function load(){
+  [S.props,S.sum]=await Promise.all([api('/properties/?limit=2000'),api('/dashboard/summary')]);
+  if(S.view==='home'&&S.cur)S.home=await api('/properties/'+encodeURIComponent(S.cur))}
+async function refresh(){await load();
+  if(S.view==='due'&&$('#dl'))return dues();
+  if(S.view==='hm'&&$('#hl'))return hl();
+  render(false)}
+function go(v){S.view=v;render()}
+async function openHome(id){try{S.cur=id;S.home=await api('/properties/'+encodeURIComponent(id));S.manual=false;S.touched=false;go('home')}catch(e){toast(e.message,1)}}
+
+/* ---------- Shell ---------- */
+const NAV=[['ov','Overview','◫'],['hm','Homes','⌂'],['due','Dues','₨']];
+const blocks=()=>[...new Set(S.props.map(p=>p.address_block).filter(Boolean))].sort().map(b=>`<option ${S.blk===b?'selected':''}>${esc(b)}</option>`).join('');
+const acts=()=>`<div class="space-y-2"><div><label class="lbl">Rate per unit (Rs.)</label><input type="number" min="0" step="any" class="inp" value="${S.rate}" oninput="S.rate=+this.value||0;calc()"></div>
+${B('btn-p w-full','Add home','addHome()')}${B('w-full','Generate homes','bulk()')}${B('w-full',"Download Excel","location='/export/excel'")}${B('w-full','Download CSV',"location='/export/csv'")}${B('w-full','Switch theme','theme()')}</div>`;
+$('#sn').innerHTML=NAV.map(([k,t,i])=>`<button class="nav w-full" data-v="${k}" onclick="go('${k}')"><span>${i}</span>${t}</button>`).join('');
+$('#sa').innerHTML=acts();
+$('#bn').innerHTML=NAV.map(([k,t,i])=>`<button class="nav flex-col !gap-0.5 !rounded-none py-2 text-xs justify-center" data-v="${k}" onclick="go('${k}')"><span class="text-lg">${i}</span>${t}</button>`).join('')+
+  `<button class="nav flex-col !gap-0.5 !rounded-none py-2 text-xs justify-center" onclick="modal('Tools',acts(),()=>true,'Done')"><span class="text-lg">☰</span>More</button>`;
+function theme(){const d=document.documentElement.classList.toggle('dark');try{localStorage.t=d?'d':'l'}catch{}}
+
+function render(anim=true){
+  const v=$('#view'),act=S.view==='home'?'hm':S.view;
+  document.querySelectorAll('[data-v]').forEach(e=>e.classList.toggle('on',e.dataset.v===act));
+  if(!S.props.length&&(S.view==='ov'||S.view==='hm')){
+    v.innerHTML=`<div class="card p-6 max-w-lg"><h2 class="font-display text-xl font-bold mb-1">No homes yet</h2><p class="opacity-70 mb-4">Generate a batch of homes, or add one by hand.</p><div class="flex gap-2 flex-wrap">${B('btn-p','Generate homes','bulk()')}${B('','Add home','addHome()')}</div></div>`;return}
+  v.innerHTML={ov:ovV,hm:hmV,due:dueV,home:homeV}[S.view]();
+  if(S.view==='ov')ovInit();if(S.view==='hm')hl();if(S.view==='due')dues();if(S.view==='home')calc();
+  if(anim){scrollTo(0,0);gsap.fromTo(v,{opacity:0,y:10},{opacity:1,y:0,duration:.3,clearProps:'all'})}}
+
+/* ---------- Overview ---------- */
+const hrow=p=>`<button type="button" data-id="${esc(p.property_id)}" onclick="openHome(this.dataset.id)" class="w-full text-left flex items-center gap-3 ${LN} px-2 py-3 min-h-[56px] hover:bg-tide/5"><span class="w-24 shrink-0 font-semibold">${esc(p.property_id)}</span><span class="flex-1 min-w-0 truncate text-sm opacity-80">${esc(p.owner_name)}, ${esc(p.address_block)}</span><span class="text-right text-sm shrink-0"><b>${f1(p.cumulative_units)}</b> units<br>${p.pending_amount>0?`<span class="${RED}">${rs(p.pending_amount)} due</span>`:'<span class="text-emerald-600 dark:text-emerald-400">Settled</span>'}</span></button>`;
+const kpi=(l,n,p='',s='')=>`<div class="card p-4"><p class="text-xs opacity-70">${l}</p><p class="kpi font-display text-2xl sm:text-3xl font-extrabold" data-v="${n}" data-p="${p}" data-s="${s}">0</p></div>`;
+function ovV(){const s=S.sum,pct=s.total_billed?Math.round(s.total_paid/s.total_billed*100):0,top=[...S.props].filter(p=>p.pending_amount>0).sort((a,b)=>b.pending_amount-a.pending_amount).slice(0,5);
+  return `<h1 class="font-display text-3xl font-extrabold">Overview</h1><p class="opacity-70 mb-5">${s.unpaid_entries_count} unpaid bills across ${s.total_homes} homes.</p>
+<div class="grid grid-cols-2 xl:grid-cols-4 gap-3 mb-5">${kpi('Homes with readings',s.active_homes,'',' / '+s.total_homes)}${kpi('Total units',s.total_units)}${kpi('Total billed',s.total_billed,'Rs. ')}${kpi('Pending',s.total_pending,'Rs. ')}</div>
+<div class="card p-4 mb-5"><div class="flex justify-between text-sm mb-2"><span>${pct}% collected</span><span class="opacity-70">${rs(s.total_paid)} of ${rs(s.total_billed)}</span></div><div class="h-3 rounded-full bg-ink/10 dark:bg-white/10 overflow-hidden"><div id="pb" class="h-full bg-tide rounded-full" style="width:0"></div></div></div>
+<div class="grid xl:grid-cols-2 gap-5"><div class="card p-4"><h2 class="font-display text-lg font-bold mb-2">Find a home</h2><input class="inp" placeholder="Number, home ID or resident name" oninput="srch(this.value)"><div id="sr" class="mt-2"></div></div>
+<div class="card p-4"><h2 class="font-display text-lg font-bold mb-2">Highest pending</h2>${top.map(hrow).join('')||'<p class="text-sm opacity-70">Every bill is paid.</p>'}</div></div>`}
+function ovInit(){
+  document.querySelectorAll('.kpi').forEach(e=>{const o={v:0};gsap.to(o,{v:+e.dataset.v,duration:1,ease:'power2.out',onUpdate:()=>e.textContent=e.dataset.p+Math.round(o.v).toLocaleString('en')+e.dataset.s})});
+  const s=S.sum;gsap.to('#pb',{width:(s.total_billed?s.total_paid/s.total_billed*100:0)+'%',duration:1.1,ease:'power2.out'})}
+function srch(q){q=q.trim().toLowerCase();const n=q.replace(/\D/g,'');
+  const r=q?S.props.filter(p=>p.property_id.toLowerCase().includes(q)||(p.owner_name||'').toLowerCase().includes(q)||(n&&+((p.property_id.match(/(\d+)$/)||[])[1])===+n)).slice(0,8):[];
+  $('#sr').innerHTML=r.map(hrow).join('')||(q?'<p class="p-3 text-sm opacity-70">No home matches that search.</p>':'')}
+
+/* ---------- Homes ledger ---------- */
+const hmV=()=>`<h1 class="font-display text-3xl font-extrabold mb-4">Homes</h1><div class="grid sm:grid-cols-3 gap-3 mb-4"><input class="inp sm:col-span-2" placeholder="Search home ID or resident" value="${esc(S.q)}" oninput="S.q=this.value;S.page=0;hl()"><select class="inp" onchange="S.blk=this.value;S.page=0;hl()"><option value="">All blocks</option>${blocks()}</select></div><div id="hl" class="card p-2"></div><div id="pg" class="flex items-center justify-between mt-3"></div>`;
+function hl(){const q=S.q.toLowerCase(),L=S.props.filter(p=>(!S.blk||p.address_block===S.blk)&&(!q||p.property_id.toLowerCase().includes(q)||(p.owner_name||'').toLowerCase().includes(q))),N=25,pages=Math.max(1,Math.ceil(L.length/N)),pg=Math.max(0,Math.min(S.page,pages-1));S.page=pg;
+  $('#hl').innerHTML=L.slice(pg*N,pg*N+N).map(hrow).join('')||'<p class="p-4 text-sm opacity-70">No homes match these filters.</p>';
+  $('#pg').innerHTML=L.length>N?`${B('',"Previous",`S.page=${Math.max(0,pg-1)};hl()`)}<span class="text-sm">Page ${pg+1} of ${pages}</span>${B('','Next',`S.page=${pg+1};hl()`)}`:`<span class="text-sm opacity-70">${L.length} homes</span>`}
+
+/* ---------- Dues ---------- */
+const dueV=()=>`<h1 class="font-display text-3xl font-extrabold">Unpaid dues</h1><p id="dt" class="opacity-70 mb-4">Loading...</p><div class="grid sm:grid-cols-3 gap-3 mb-4"><input id="dq" class="inp sm:col-span-2" placeholder="Search home, resident or period" oninput="deb(dues)"><select id="db" class="inp" onchange="dues()"><option value="">All blocks</option>${blocks()}</select></div><div id="dl" class="card p-2"></div>`;
+async function dues(){try{
+  const q=$('#dq')?.value||'',b=$('#db')?.value||'',d=await api(`/usage/unpaid/?limit=300&search=${encodeURIComponent(q)}&block=${encodeURIComponent(b)}`);
+  if(!$('#dl'))return;
+  $('#dt').textContent=`${d.total_count} unpaid bills, ${rs(d.total_amount)} pending.`;
+  $('#dl').innerHTML=d.items.map(i=>`<div class="flex flex-wrap items-center gap-x-4 gap-y-2 ${LN} px-2 py-3"><button type="button" data-id="${esc(i.property_id)}" onclick="openHome(this.dataset.id)" class="text-left flex-1 min-w-[10rem]"><b>${esc(i.property_id)}</b><br><span class="text-xs opacity-70">${esc(i.owner_name)}, ${esc(i.billing_period)}</span></button><span class="text-sm">${f1(i.added_units)} units</span><b>${rs(i.bill_amount)}</b>${B('btn-p !min-h-[36px] !px-3','Mark paid',`pay(${i.log_id},'PAID')`)}</div>`).join('')||'<p class="p-4 text-sm opacity-70">Nothing is overdue. Every bill is paid.</p>'
+}catch(e){toast(e.message,1)}}
+
+/* ---------- Home detail ---------- */
+function homeV(){const h=S.home,L=[...h.logs].sort((a,b)=>b.log_id-a.log_id),pend=h.pending_amount,d=new Date(),per=d.toLocaleString('en',{month:'short'})+'-'+d.getFullYear();
+  return `${B('mb-3','← Homes',"go('hm')")}
+<div class="flex flex-wrap items-start justify-between gap-3 mb-5"><div><h1 class="font-display text-3xl font-extrabold">${esc(h.property_id)}</h1><p class="opacity-70">${esc(h.owner_name)}, ${esc(h.address_block)}</p></div><div class="flex flex-wrap gap-2">${B('','Edit','editHome()')}${B('','Print slip','slip()')}${pend>0?B('btn-p','Mark all paid','payAll()'):''}</div></div>
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">${stat('Total units',f1(h.cumulative_units))}${stat('Last meter reading',f1(h.last_meter_reading))}${stat('Billed',rs(h.cumulative_billed_amount))}${stat('Pending',rs(pend),pend>0?RED:'')}</div>
+<form class="card p-4 mb-5" onsubmit="event.preventDefault();save()">
+<div class="flex items-center justify-between mb-3"><h2 class="font-display text-lg font-bold">New reading</h2><label class="text-xs flex items-center gap-2 min-h-[44px]"><input type="checkbox" ${S.manual?'checked':''} onchange="S.manual=this.checked;S.touched=false;render(false)"> Enter units manually</label></div>
+<div class="grid sm:grid-cols-3 lg:grid-cols-4 gap-3">
+<div><label class="lbl">Billing period</label><input id="per" class="inp" value="${per}"></div>
+${S.manual?`<div><label class="lbl">Units used</label><input id="mu" type="number" step="any" min="0" class="inp" oninput="calc()"></div>`:`<div><label class="lbl">Previous reading</label><div class="inp flex items-center opacity-70">${f1(h.last_meter_reading)}</div></div><div><label class="lbl">Current reading</label><input id="cr" type="number" step="any" min="0" class="inp" oninput="calc()"></div>`}
+<div><label class="lbl">Bill (Rs.)</label><input id="bill" type="number" step="any" min="0" class="inp" oninput="S.touched=true"></div></div>
+<div class="flex items-center justify-between gap-3 mt-3"><p id="up" class="text-sm font-semibold"></p><button class="btn btn-p">Save reading</button></div></form>
+<div class="card p-2 sm:p-4"><h2 class="font-display text-lg font-bold p-2 sm:p-0 sm:mb-2">History</h2>${L.map(row).join('')||'<p class="p-3 text-sm opacity-70">No readings yet. Save the first one above.</p>'}</div>`}
+function row(l){const op=l.billing_period==='OPENING-BALANCE',paid=l.payment_status==='PAID';
+  return `<div class="flex flex-wrap items-center gap-x-4 gap-y-2 ${LN} px-2 py-3"><div class="w-28"><p class="font-semibold">${op?'Opening balance':esc(l.billing_period)}</p><p class="text-xs opacity-60">${(l.entry_date||'').slice(0,10)}</p></div>
+<div class="text-sm flex-1 min-w-[9rem]">${op?`Meter ${f1(l.current_reading)}`:l.current_reading!=null?`${f1(l.previous_reading)} to ${f1(l.current_reading)}`:'Manual units'}<br><b>+${f1(l.added_units)} units</b> <span class="opacity-60">(total ${f1(l.new_total_units)})</span></div>
+${op?'':`<b class="w-28 sm:text-right">${rs(l.bill_amount)}</b><button type="button" onclick="pay(${l.log_id},'${paid?'UNPAID':'PAID'}')" class="rounded-full px-3 min-h-[36px] text-xs font-semibold ${paid?'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300':'bg-red-500/15 text-red-700 dark:text-red-300'}">${paid?'Paid':'Unpaid'}</button><div class="flex gap-1">${B('!min-h-[36px] !px-3','Edit',`editLog(${l.log_id})`)}${B('btn-d !min-h-[36px] !px-3','Delete',`delLog(${l.log_id})`)}</div>`}</div>`}
+function calc(){const c=$('#cr'),m=$('#mu');if(!S.home||(!c&&!m))return;
+  const raw=(c||m).value,v=+raw||0,u=c?v-S.home.last_meter_reading:v;S.units=u;const e=$('#up');
+  e.textContent=!raw?'':u>0?`${f1(u)} units${S.rate?', about '+rs(u*S.rate):''}`:'Current reading must be above '+f1(S.home.last_meter_reading);
+  e.className='text-sm font-semibold '+(u>0?'text-tide':RED);
+  if(!S.touched)$('#bill').value=u>0&&S.rate?+(u*S.rate).toFixed(2):''}
+function save(){const h=S.home,p=$('#per').value.trim();calc();
+  if(!p)return toast('Enter the billing period',1);
+  if(!(S.units>0))return toast(S.manual?'Enter the units used':'Current reading must be above '+f1(h.last_meter_reading),1);
+  const body={property_id:h.property_id,billing_period:p,bill_amount:+$('#bill').value||0};
+  if(S.manual)body.added_units=S.units;else body.current_reading=+$('#cr').value;
+  if(h.logs.some(l=>l.billing_period===p)&&!confirm(p+' already has an entry. Add another?'))return;
+  run(()=>api('/usage/add/',{method:'POST',body}),'Saved '+p)}
+const pay=(id,s)=>run(()=>api(`/usage/${id}/payment`,{method:'PATCH',body:{status:s}}),s==='PAID'?'Marked paid':'Marked unpaid');
+const payAll=()=>run(()=>api(`/properties/${encodeURIComponent(S.cur)}/pay-all`,{method:'POST'}),'All bills marked paid');
+function editLog(id){const l=S.home.logs.find(x=>x.log_id===id),r=l.current_reading!=null;
+  modal('Edit entry',`<div><label class="lbl">Billing period</label><input name="p" class="inp" required value="${esc(l.billing_period)}"></div><div><label class="lbl">${r?'Current reading':'Units used'}</label><input name="v" type="number" step="any" min="0" required class="inp" value="${r?l.current_reading:l.added_units}"></div><div><label class="lbl">Bill (Rs.)</label><input name="b" type="number" step="any" min="0" class="inp" value="${l.bill_amount}"></div>${r?`<p class="text-xs opacity-70">Previous reading is ${f1(l.previous_reading)}. Later entries are recalculated.</p>`:''}`,
+  f=>{const d=Object.fromEntries(new FormData(f)),body={billing_period:d.p,bill_amount:+d.b||0};body[r?'current_reading':'added_units']=+d.v;
+    return run(()=>api('/usage/'+id,{method:'PUT',body}),'Entry updated')})}
+const delLog=id=>modal('Delete this entry?','<p class="text-sm">Totals and later readings are recalculated after the delete.</p>',()=>run(()=>api('/usage/'+id,{method:'DELETE'}),'Entry deleted'),'Delete');
+function editHome(){const h=S.home;
+  modal('Edit home',`<div><label class="lbl">Resident name</label><input name="o" class="inp" value="${esc(h.owner_name)}"></div><div><label class="lbl">Block</label><input name="b" class="inp" value="${esc(h.address_block)}"></div><div><label class="lbl">New home ID (optional)</label><input name="n" class="inp" placeholder="${esc(h.property_id)}"><p class="text-xs opacity-60 mt-1">History moves to the new ID.</p></div>`,
+  f=>{const d=Object.fromEntries(new FormData(f)),id=encodeURIComponent(h.property_id);
+    return run(async()=>{await api('/properties/'+id,{method:'PUT',body:{owner_name:d.o,address_block:d.b}});
+      if(d.n.trim()){const r=await api(`/properties/${id}/rename`,{method:'PUT',body:{new_property_id:d.n.trim()}});S.cur=r.property_id}},'Home updated')})}
+function addHome(){modal('Add home',`<div><label class="lbl">Home ID</label><input name="id" class="inp" required placeholder="HOME-501"></div><div><label class="lbl">Resident name</label><input name="o" class="inp"></div><div><label class="lbl">Block</label><input name="b" class="inp" value="Block A"></div><div class="grid grid-cols-2 gap-3"><div><label class="lbl">Opening units</label><input name="u" type="number" step="any" min="0" value="0" class="inp"></div><div><label class="lbl">Opening meter reading</label><input name="m" type="number" step="any" min="0" value="0" class="inp"></div></div>`,
+  f=>{const d=Object.fromEntries(new FormData(f));
+    return run(()=>api('/properties/',{method:'POST',body:{property_id:d.id,owner_name:d.o||'Unassigned',address_block:d.b,initial_units:+d.u||0,initial_meter_reading:+d.m||0}}),'Home added')})}
+function bulk(){modal('Generate homes',`<div class="grid grid-cols-2 gap-3"><div><label class="lbl">ID prefix</label><input name="p" class="inp" value="HOME-"></div><div><label class="lbl">Block</label><input name="b" class="inp" value="Block A"></div><div><label class="lbl">Start number</label><input name="s" type="number" min="1" value="1" class="inp"></div><div><label class="lbl">How many</label><input name="c" type="number" min="1" max="1000" value="100" class="inp"></div></div>`,
+  f=>{const d=Object.fromEntries(new FormData(f));let r;
+    return run(async()=>{r=await api('/properties/bulk-generate/',{method:'POST',body:{prefix:d.p,start_number:+d.s,count:+d.c,address_block:d.b}})},()=>`Created ${r.created_count} homes, skipped ${r.skipped_count}`)},'Generate')}
+function slip(){const h=S.home,l=[...h.logs].filter(x=>x.billing_period!=='OPENING-BALANCE').sort((a,b)=>b.log_id-a.log_id)[0];
+  if(!l)return toast('Save a reading first to print a slip',1);
+  const r=[['Home ID',h.property_id],['Resident',h.owner_name],['Block',h.address_block],['Period',l.billing_period],['Meter',l.current_reading!=null?`${f1(l.previous_reading)} -> ${f1(l.current_reading)}`:'Manual units'],['Units',`+${f1(l.added_units)}`],['Cumulative',`${f1(l.new_total_units)} units`],['Bill',rs(l.bill_amount)],['Status',l.payment_status],['Printed',new Date().toLocaleString()]];
+  $('#slip').innerHTML=`<pre style="font:15px/1.7 ui-monospace,monospace;max-width:420px">UTILITY USAGE SLIP\n====================================\n${r.map(([k,v])=>k.padEnd(11)+': '+esc(v)).join('\n')}\n====================================</pre>`;print()}
+
+/* ---------- Three.js background (desktop only, light) ---------- */
+(()=>{if(matchMedia('(prefers-reduced-motion:reduce)').matches||innerWidth<768)return;
+  const c=$('#bg'),r=new THREE.WebGLRenderer({canvas:c,alpha:true,antialias:true}),s=new THREE.Scene(),cam=new THREE.PerspectiveCamera(50,1,.1,100);
+  cam.position.z=7;r.setPixelRatio(Math.min(devicePixelRatio,1.5));
+  const g=new THREE.Mesh(new THREE.IcosahedronGeometry(2.4,1),new THREE.MeshBasicMaterial({color:0x0e6f68,wireframe:true,transparent:true,opacity:.35}));g.position.x=3.4;s.add(g);
+  const pg=new THREE.BufferGeometry();pg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(420).map(()=>(Math.random()-.5)*16),3));
+  const p=new THREE.Points(pg,new THREE.PointsMaterial({color:0xf2a900,size:.05}));s.add(p);
+  const rz=()=>{r.setSize(innerWidth,innerHeight,false);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()};rz();addEventListener('resize',rz);
+  let on=true;const loop=()=>{if(!on)return;g.rotation.y+=.002;g.rotation.x+=.001;p.rotation.y-=.0005;r.render(s,cam);requestAnimationFrame(loop)};
+  document.addEventListener('visibilitychange',()=>{on=!document.hidden;if(on)loop()});loop()})();
+
+/* ---------- Boot ---------- */
+(async()=>{try{await load();render()}catch(e){$('#view').innerHTML=`<div class="card p-6 max-w-lg"><h2 class="font-display text-xl font-bold mb-2">Server not reachable</h2><p>${esc(e.message)}</p></div>`}})();
+</script>
+</body>
+</html>

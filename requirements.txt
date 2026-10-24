@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+sqlalchemy
+pydantic>=2
+openpyxl
+psycopg2-binary
