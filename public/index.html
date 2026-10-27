@@ -42,7 +42,7 @@
 
 <script>
 const $=s=>document.querySelector(s);
-const S={props:[],sum:null,view:'ov',cur:null,home:null,rate:25,manual:false,touched:false,units:0,page:0,q:'',blk:''};
+const S={props:[],sum:null,view:'login',cur:null,home:null,rate:25,manual:false,touched:false,units:0,page:0,q:'',blk:'',me:null,cust:null,clist:[],ulist:[],reg:false};
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const f1=n=>(+n||0).toLocaleString('en',{maximumFractionDigits:1});
 const rs=n=>'Rs. '+(+n||0).toLocaleString('en',{maximumFractionDigits:2});
@@ -53,12 +53,23 @@ let T;const deb=f=>{clearTimeout(T);T=setTimeout(f,250)};
 gsap.globalTimeline.timeScale(matchMedia('(prefers-reduced-motion:reduce)').matches?100:1);
 
 /* ---------- API + feedback ---------- */
+const tok=()=>{try{return localStorage.ut_token||''}catch{return ''}};
+const setTok=t=>{try{localStorage.ut_token=t}catch{}};
+const clearTok=()=>{try{localStorage.removeItem('ut_token')}catch{}};
 async function api(p,o={}){
-  let r;try{r=await fetch(p,{method:o.method||'GET',headers:o.body?{'Content-Type':'application/json'}:{},body:o.body?JSON.stringify(o.body):undefined})}
+  const h={};if(o.body)h['Content-Type']='application/json';const t=tok();if(t)h.Authorization='Bearer '+t;
+  let r;try{r=await fetch(p,{method:o.method||'GET',headers:h,body:o.body?JSON.stringify(o.body):undefined})}
   catch{throw Error('Cannot reach the server. Start it with: uvicorn main:app --reload')}
+  if(r.status===401){clearTok();S.me=null;goLogin();throw Error('Session expired. Please log in again.')}
   const d=await r.json().catch(()=>({}));
   if(!r.ok){const m=d.detail;throw Error(Array.isArray(m)?m.map(x=>x.msg.replace('Value error, ','')).join(', '):m||'Request failed')}
   return d}
+async function dl(p){const t=tok();const r=await fetch(p,{headers:t?{Authorization:'Bearer '+t}:{}});
+  if(r.status===401){clearTok();S.me=null;goLogin();throw Error('Session expired. Please log in again.')}
+  if(!r.ok)throw Error('Download failed');
+  const b=await r.blob(),a=document.createElement('a');a.href=URL.createObjectURL(b);
+  const cd=r.headers.get('Content-Disposition')||'',m=cd.match(/filename="?([^";]+)"?/);a.download=m?m[1]:'download';
+  document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000)}
 function toast(m,e){const t=document.createElement('div');
   t.className='fixed z-[60] right-4 left-4 sm:left-auto sm:w-80 rounded-xl px-4 py-3 text-sm font-semibold shadow-lg text-white '+(e?'bg-red-600':'bg-tide');
   t.style.top='max(1rem,env(safe-area-inset-top))';t.textContent=m;document.body.append(t);gsap.from(t,{y:-20,opacity:0,duration:.25});
@@ -75,27 +86,52 @@ function modal(t,h,ok,label='Save'){
 async function load(){
   [S.props,S.sum]=await Promise.all([api('/properties/?limit=2000'),api('/dashboard/summary')]);
   if(S.view==='home'&&S.cur)S.home=await api('/properties/'+encodeURIComponent(S.cur))}
-async function refresh(){await load();
+async function refresh(){
+  try{
+    if(S.view==='cust')S.cust=await api('/me/dashboard');
+    else if(S.view==='customers')S.clist=await api('/customers/');
+    else if(S.view==='users')S.ulist=await api('/admin/users');
+    else await load();
+  }catch(e){toast(e.message,1);return}
   if(S.view==='due'&&$('#dl'))return dues();
   if(S.view==='hm'&&$('#hl'))return hl();
   render(false)}
-function go(v){S.view=v;render()}
+async function go(v){
+  try{
+    if(v==='cust')S.cust=await api('/me/dashboard');
+    else if(v==='customers')S.clist=await api('/customers/');
+    else if(v==='users')S.ulist=await api('/admin/users');
+    else if(v==='login'){S.view='login';render();return}
+  }catch(e){toast(e.message,1);return}
+  S.view=v;render()}
+function goLogin(){S.me=null;S.view='login';buildNav();render()}
 async function openHome(id){try{S.cur=id;S.home=await api('/properties/'+encodeURIComponent(id));S.manual=false;S.touched=false;go('home')}catch(e){toast(e.message,1)}}
 
 /* ---------- Shell ---------- */
 const NAV=[['ov','Overview','◫'],['hm','Homes','⌂'],['due','Dues','₨']];
 const blocks=()=>[...new Set(S.props.map(p=>p.address_block).filter(Boolean))].sort().map(b=>`<option ${S.blk===b?'selected':''}>${esc(b)}</option>`).join('');
 const acts=()=>`<div class="space-y-2"><div><label class="lbl">Rate per unit (Rs.)</label><input type="number" min="0" step="any" class="inp" value="${S.rate}" oninput="S.rate=+this.value||0;calc()"></div>
-${B('btn-p w-full','Add home','addHome()')}${B('w-full','Generate homes','bulk()')}${B('w-full',"Download Excel","location='/export/excel'")}${B('w-full','Download CSV',"location='/export/csv'")}${B('w-full','Switch theme','theme()')}</div>`;
-$('#sn').innerHTML=NAV.map(([k,t,i])=>`<button class="nav w-full" data-v="${k}" onclick="go('${k}')"><span>${i}</span>${t}</button>`).join('');
-$('#sa').innerHTML=acts();
-$('#bn').innerHTML=NAV.map(([k,t,i])=>`<button class="nav flex-col !gap-0.5 !rounded-none py-2 text-xs justify-center" data-v="${k}" onclick="go('${k}')"><span class="text-lg">${i}</span>${t}</button>`).join('')+
-  `<button class="nav flex-col !gap-0.5 !rounded-none py-2 text-xs justify-center" onclick="modal('Tools',acts(),()=>true,'Done')"><span class="text-lg">☰</span>More</button>`;
+${B('btn-p w-full','Add home','addHome()')}${B('w-full','Generate homes','bulk()')}${B('w-full','Customers',"go('customers')")}${S.me&&S.me.role==='super_admin'?B('w-full','Users',"go('users')"):''}${B('w-full','Download Excel',"dl('/export/excel')")}${B('w-full','Download CSV',"dl('/export/csv')")}${B('w-full','Change password',"go('pw')")}${B('w-full','Switch theme','theme()')}${B('w-full','Logout','logout()')}</div>`;
+function buildNav(){
+  if(!S.me){$('#sn').innerHTML='';$('#sa').innerHTML='';$('#bn').innerHTML='';return}
+  const staff=S.me.role!=='customer',admin=S.me.role==='super_admin';
+  const items=staff?[...NAV,['customers','Customers','👥'],...(admin?[['users','Users','🔑']]:[])]:[['cust','My dashboard','⌂']];
+  $('#sn').innerHTML=items.map(([k,t,i])=>`<button class="nav w-full" data-v="${k}" onclick="go('${k}')"><span>${i}</span>${t}</button>`).join('');
+  $('#sa').innerHTML=staff?acts():`<div class="space-y-2">${B('w-full','Change password',"go('pw')")}${B('w-full','Switch theme','theme()')}${B('w-full','Logout','logout()')}</div>`;
+  $('#bn').innerHTML=staff
+    ?NAV.map(([k,t,i])=>`<button class="nav flex-col !gap-0.5 !rounded-none py-2 text-xs justify-center" data-v="${k}" onclick="go('${k}')"><span class="text-lg">${i}</span>${t}</button>`).join('')+
+     `<button class="nav flex-col !gap-0.5 !rounded-none py-2 text-xs justify-center" onclick="modal('Tools',acts(),()=>true,'Done')"><span class="text-lg">☰</span>More</button>`
+    :`<button class="nav flex-col !gap-0.5 !rounded-none py-2 text-xs justify-center" data-v="cust" onclick="go('cust')"><span class="text-lg">⌂</span>Dashboard</button><button class="nav flex-col !gap-0.5 !rounded-none py-2 text-xs justify-center" onclick="logout()"><span class="text-lg">↪</span>Logout</button>`}
 function theme(){const d=document.documentElement.classList.toggle('dark');try{localStorage.t=d?'d':'l'}catch{}}
 
 function render(anim=true){
   const v=$('#view'),act=S.view==='home'?'hm':S.view;
   document.querySelectorAll('[data-v]').forEach(e=>e.classList.toggle('on',e.dataset.v===act));
+  if(S.view==='login'){v.innerHTML=loginV();if(anim)scrollTo(0,0);return}
+  if(S.view==='cust'){v.innerHTML=custV();if(anim)scrollTo(0,0);return}
+  if(S.view==='customers'){v.innerHTML=customersV();if(anim)scrollTo(0,0);return}
+  if(S.view==='users'){v.innerHTML=usersV();if(anim)scrollTo(0,0);return}
+  if(S.view==='pw'){v.innerHTML=pwV();if(anim)scrollTo(0,0);return}
   if(!S.props.length&&(S.view==='ov'||S.view==='hm')){
     v.innerHTML=`<div class="card p-6 max-w-lg"><h2 class="font-display text-xl font-bold mb-1">No homes yet</h2><p class="opacity-70 mb-4">Generate a batch of homes, or add one by hand.</p><div class="flex gap-2 flex-wrap">${B('btn-p','Generate homes','bulk()')}${B('','Add home','addHome()')}</div></div>`;return}
   v.innerHTML={ov:ovV,hm:hmV,due:dueV,home:homeV}[S.view]();
@@ -196,8 +232,90 @@ function slip(){const h=S.home,l=[...h.logs].filter(x=>x.billing_period!=='OPENI
   let on=true;const loop=()=>{if(!on)return;g.rotation.y+=.002;g.rotation.x+=.001;p.rotation.y-=.0005;r.render(s,cam);requestAnimationFrame(loop)};
   document.addEventListener('visibilitychange',()=>{on=!document.hidden;if(on)loop()});loop()})();
 
+/* ---------- Auth + role views ---------- */
+function loginV(){
+  if(!S.reg)return `<div class="card p-6 max-w-md mx-auto"><h1 class="font-display text-2xl font-extrabold mb-1">Welcome back</h1><p class="opacity-70 mb-4 text-sm">Log in to see your dashboard.</p>
+<form class="space-y-3" onsubmit="event.preventDefault();doLogin(this)">
+<div><label class="lbl">Email</label><input name="email" type="email" required class="inp"></div>
+<div><label class="lbl">Password</label><input name="password" type="password" required class="inp"></div>
+<button class="btn btn-p w-full">Log in</button></form>
+<div class="flex justify-between mt-4 text-sm"><button type="button" class="underline opacity-70" onclick="S.reg=true;render(false)">Create a customer account</button><button type="button" class="underline opacity-70" onclick="forgotPw()">Forgot password?</button></div>
+<p class="text-xs opacity-60 mt-4">Password reset is handled by your partner or super admin — no reset email is sent.</p></div>`;
+  return `<div class="card p-6 max-w-md mx-auto"><h1 class="font-display text-2xl font-extrabold mb-1">Create account</h1><p class="opacity-70 mb-4 text-sm">Customer accounts only. Staff accounts are created by a super admin.</p>
+<form class="space-y-3" onsubmit="event.preventDefault();doRegister(this)">
+<div><label class="lbl">Full name</label><input name="full_name" class="inp"></div>
+<div><label class="lbl">Email</label><input name="email" type="email" required class="inp"></div>
+<div><label class="lbl">Password (min 8 characters)</label><input name="password" type="password" required minlength="8" class="inp"></div>
+<div><label class="lbl">Phone</label><input name="phone" class="inp"></div>
+<div><label class="lbl">Account number</label><input name="account_number" required class="inp"></div>
+<div><label class="lbl">Home number (optional — must already exist)</label><input name="home_number" class="inp" placeholder="HOME-001"></div>
+<button class="btn btn-p w-full">Create account</button></form>
+<div class="mt-4 text-sm"><button type="button" class="underline opacity-70" onclick="S.reg=false;render(false)">Back to log in</button></div></div>`}
+async function afterAuth(d){setTok(d.token);S.me=d.user;buildNav();
+  if(S.me.force_password_change){S.view='pw';render();return}
+  if(S.me.role==='customer')await go('cust');else{await load();S.view='ov';render()}}
+async function doLogin(f){const d=Object.fromEntries(new FormData(f));
+  try{await afterAuth(await api('/auth/login',{method:'POST',body:{email:d.email,password:d.password}}));toast('Logged in')}
+  catch(e){toast(e.message,1)}}
+async function doRegister(f){const d=Object.fromEntries(new FormData(f));
+  try{await afterAuth(await api('/auth/register',{method:'POST',body:{email:d.email,password:d.password,full_name:d.full_name||null,phone:d.phone||null,account_number:d.account_number,home_number:d.home_number||null}}));toast('Account created')}
+  catch(e){toast(e.message,1)}}
+async function forgotPw(){const em=prompt('Enter your account email:');if(!em)return;
+  try{const d=await api('/auth/forgot-password',{method:'POST',body:{email:em}});toast(d.message)}
+  catch(e){toast(e.message,1)}}
+async function logout(){try{await api('/auth/logout',{method:'POST'})}catch{}clearTok();goLogin()}
+function pwV(){const forced=S.me&&S.me.force_password_change;
+  return `<div class="card p-6 max-w-md mx-auto"><h1 class="font-display text-2xl font-extrabold mb-1">Change password</h1>
+${forced?'<p class="text-sm mb-4 text-amber-700 dark:text-amber-300">An admin issued you a temporary password — change it before continuing.</p>':'<p class="opacity-70 mb-4 text-sm">Other sessions are signed out when you change your password.</p>'}
+<form class="space-y-3" onsubmit="event.preventDefault();doPw(this)">
+<div><label class="lbl">Current password</label><input name="cur" type="password" required class="inp"></div>
+<div><label class="lbl">New password (min 8 characters)</label><input name="nw" type="password" required minlength="8" class="inp"></div>
+<div><label class="lbl">New password again</label><input name="nw2" type="password" required minlength="8" class="inp"></div>
+<button class="btn btn-p w-full">Change password</button></form>
+${forced?'':`<div class="mt-4 text-sm"><button type="button" class="underline opacity-70" onclick="S.me.role==='customer'?go('cust'):go('ov')">Back</button></div>`}</div>`}
+async function doPw(f){const d=Object.fromEntries(new FormData(f));
+  if(d.nw!==d.nw2)return toast('New passwords do not match',1);
+  try{await api('/auth/change-password',{method:'POST',body:{current_password:d.cur,new_password:d.nw}});toast('Password changed');
+    const me=await api('/auth/me');S.me=me.user;buildNav();
+    if(S.me.role==='customer')await go('cust');else{await load();S.view='ov';render()}}
+  catch(e){toast(e.message,1)}}
+const badge=s=>s==='PAID'?'<span class="rounded-full px-3 py-1 text-xs font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">PAID</span>':s==='UNPAID'?'<span class="rounded-full px-3 py-1 text-xs font-semibold bg-red-500/15 text-red-700 dark:text-red-300">UNPAID</span>':'<span class="rounded-full px-3 py-1 text-xs font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300">NO HOME LINKED</span>';
+function custV(){const c=S.cust;if(!c)return '<div class="card p-6">Loading...</div>';
+  const p=c.profile,pr=c.property,L=[...c.logs].sort((a,b)=>b.log_id-a.log_id);
+  return `<h1 class="font-display text-3xl font-extrabold mb-1">My dashboard</h1><p class="opacity-70 mb-5">${esc(c.user.full_name||c.user.email)} · Account ${esc(p.account_number)}</p>
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">${stat('Payment status',badge(c.payment_status))}${stat('Billed',rs(c.total_billed))}${stat('Paid',rs(c.total_paid))}${stat('Pending',rs(c.total_pending),c.total_pending>0?RED:'')}</div>
+<div class="grid xl:grid-cols-2 gap-5">
+<div class="card p-4"><h2 class="font-display text-lg font-bold mb-2">My home</h2>
+${pr?`<p class="text-sm"><b>Home:</b> ${esc(pr.home_number||'Not linked yet')}</p><p class="text-sm"><b>Name:</b> ${esc(c.user.full_name||'—')}</p><p class="text-sm"><b>Phone:</b> ${esc(p.phone||c.user.phone||'—')}</p><p class="text-sm"><b>Address:</b> ${esc(p.address||'—')}</p>`:''}
+<form class="mt-3 space-y-2" onsubmit="event.preventDefault();linkHome(this)"><label class="lbl">${pr&&pr.home_number?'Change linked home':'Link your home'}</label><div class="flex gap-2"><input name="home_number" required class="inp" placeholder="HOME-001" value="${esc(pr&&pr.home_number||'')}"><button class="btn btn-p">Link</button></div><p class="text-xs opacity-60">The home must already exist and not be linked to another customer.</p></form>
+<form class="mt-4 space-y-2" onsubmit="event.preventDefault();saveProfile(this)"><label class="lbl">Edit profile</label><input name="full_name" class="inp" placeholder="Full name" value="${esc(c.user.full_name||'')}"><input name="phone" class="inp" placeholder="Phone" value="${esc(p.phone||c.user.phone||'')}"><input name="address" class="inp" placeholder="Address" value="${esc(p.address||'')}"><button class="btn">Save profile</button></form></div>
+<div class="card p-2 sm:p-4"><h2 class="font-display text-lg font-bold p-2 sm:p-0 sm:mb-2">My bills</h2>${L.map(l=>`<div class="flex flex-wrap items-center gap-x-4 gap-y-2 ${LN} px-2 py-3"><div class="flex-1 min-w-[9rem]"><p class="font-semibold">${esc(l.billing_period)}</p><p class="text-xs opacity-60">${(l.entry_date||'').slice(0,10)} · +${f1(l.added_units)} units</p></div><b>${rs(l.bill_amount)}</b><span class="rounded-full px-3 py-1 text-xs font-semibold ${l.payment_status==='PAID'?'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300':'bg-red-500/15 text-red-700 dark:text-red-300'}">${l.payment_status}</span></div>`).join('')||'<p class="p-3 text-sm opacity-70">No bills yet.</p>'}
+<p class="p-3 text-xs opacity-60">Payment status is set by staff when they mark a bill paid. You cannot mark your own bills paid.</p></div></div>`}
+async function linkHome(f){const d=Object.fromEntries(new FormData(f));
+  await run(()=>api('/me/link-home',{method:'POST',body:{home_number:d.home_number}}),'Home linked')}
+async function saveProfile(f){const d=Object.fromEntries(new FormData(f));
+  await run(()=>api('/me/profile',{method:'PUT',body:{full_name:d.full_name||null,phone:d.phone||null,address:d.address||null}}),'Profile saved')}
+function customersV(){return `<h1 class="font-display text-3xl font-extrabold mb-4">Customers</h1><div class="card p-2">${S.clist.map(c=>`<div class="flex flex-wrap items-center gap-x-4 gap-y-2 ${LN} px-2 py-3"><div class="flex-1 min-w-[12rem]"><b>${esc(c.account_number)}</b><br><span class="text-xs opacity-70">${esc(c.full_name||'') } · ${esc(c.email)}</span></div><span class="text-sm">Home ${esc(c.home_number||'—')}</span>${badge(c.payment_status)}<span class="text-sm">${rs(c.total_pending)} pending</span></div>`).join('')||'<p class="p-4 text-sm opacity-70">No customers yet.</p>'}</div>`}
+function usersV(){return `<h1 class="font-display text-3xl font-extrabold mb-4">Users</h1><div class="mb-4">${B('btn-p','Create user','createUser()')}</div><div class="card p-2">${S.ulist.map(u=>{const pr=u.profile;return `<div class="flex flex-wrap items-center gap-x-3 gap-y-2 ${LN} px-2 py-3"><div class="flex-1 min-w-[12rem]"><b>${esc(u.user.email)}</b><br><span class="text-xs opacity-70">${esc(u.user.full_name||'')} ${pr?`· Account ${esc(pr.account_number)}`:''}</span></div>
+<select class="inp !w-auto" onchange="setRole(${u.user.id},this.value)"><option value="customer" ${u.user.role==='customer'?'selected':''}>customer</option><option value="partner" ${u.user.role==='partner'?'selected':''}>partner</option><option value="super_admin" ${u.user.role==='super_admin'?'selected':''}>super_admin</option></select>
+<button type="button" class="btn !min-h-[36px] !px-3" onclick="setActive(${u.user.id},${!u.user.is_active})">${u.user.is_active?'Deactivate':'Activate'}</button>
+<button type="button" class="btn !min-h-[36px] !px-3" onclick="resetPw(${u.user.id})">Reset password</button>
+<span class="text-xs ${u.user.is_active?'':'text-red-600'}">${u.user.is_active?'Active':'Inactive'}${u.user.force_password_change?' · must change password':''}</span></div>`}).join('')||'<p class="p-4 text-sm opacity-70">No users yet.</p>'}</div>`}
+async function setRole(id,role){await run(()=>api('/admin/users/'+id+'/role',{method:'PATCH',body:{role}}),'Role updated')}
+async function setActive(id,active){await run(()=>api('/admin/users/'+id+'/active',{method:'PATCH',body:{is_active:active}}),active?'Activated':'Deactivated')}
+function resetPw(id){const u=S.ulist.find(x=>x.user.id===id),email=u?u.user.email:'this user';modal('Reset password for '+email,`<div><label class="lbl">Temporary password (min 8 characters)</label><input name="pw" type="text" required minlength="8" class="inp"></div><p class="text-xs opacity-70">The user must change this password at next log in. Share it with them directly.</p>`,
+  f=>{const d=Object.fromEntries(new FormData(f));return run(()=>api('/admin/users/'+id+'/reset-password',{method:'POST',body:{new_password:d.pw}}),'Password reset')},'Reset')}
+function createUser(){modal('Create user',`<div><label class="lbl">Email</label><input name="email" type="email" required class="inp"></div><div><label class="lbl">Password (min 8 characters)</label><input name="pw" type="password" required minlength="8" class="inp"></div><div><label class="lbl">Role</label><select name="role" class="inp"><option value="customer">customer</option><option value="partner">partner</option><option value="super_admin">super_admin</option></select></div><div><label class="lbl">Full name</label><input name="full_name" class="inp"></div><div><label class="lbl">Phone</label><input name="phone" class="inp"></div><div><label class="lbl">Account number (customers only)</label><input name="account_number" class="inp"></div><div><label class="lbl">Home number (optional)</label><input name="home_number" class="inp"></div>`,
+  f=>{const d=Object.fromEntries(new FormData(f));return run(()=>api('/admin/users',{method:'POST',body:{email:d.email,password:d.pw,role:d.role,full_name:d.full_name||null,phone:d.phone||null,account_number:d.account_number||null,home_number:d.home_number||null}}),'User created')},'Create')}
+
 /* ---------- Boot ---------- */
-(async()=>{try{await load();render()}catch(e){$('#view').innerHTML=`<div class="card p-6 max-w-lg"><h2 class="font-display text-xl font-bold mb-2">Server not reachable</h2><p>${esc(e.message)}</p></div>`}})();
+(async()=>{try{
+  if(!tok()){goLogin();return}
+  const me=await api('/auth/me');S.me=me.user;buildNav();
+  if(S.me.force_password_change){S.view='pw';render();return}
+  if(S.me.role==='customer')await go('cust');
+  else{await load();S.view='ov';render()}
+}catch(e){if(e.message.includes('Cannot reach'))toast(e.message,1);goLogin()}})();
 </script>
 </body>
 </html>

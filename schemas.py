@@ -120,3 +120,116 @@ class DashboardSummary(BaseModel):
     total_paid: float
     total_pending: float
     unpaid_entries_count: int
+
+
+# ---------- Auth, roles, customers (added 2026-10-27) ----------
+class UserRegister(BaseModel):
+    """Public registration creates a CUSTOMER account only. The role is never
+    accepted from a public request, so nobody can self-promote to staff."""
+
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=8, max_length=128)
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    account_number: str = Field(..., min_length=1, max_length=64)
+    home_number: Optional[str] = None
+
+
+class UserLogin(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254)
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+class AdminUserCreate(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=8, max_length=128)
+    role: Literal["customer", "partner", "super_admin"]
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    account_number: Optional[str] = None
+    home_number: Optional[str] = None
+
+
+class AdminRoleUpdate(BaseModel):
+    role: Literal["customer", "partner", "super_admin"]
+
+
+class AdminActiveUpdate(BaseModel):
+    is_active: bool
+
+
+class AdminPasswordReset(BaseModel):
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+class ProfileUpdate(BaseModel):
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+
+
+class LinkHomeRequest(BaseModel):
+    home_number: str = Field(..., min_length=1, max_length=64)
+
+
+class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: str
+    role: str
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    is_active: bool
+    force_password_change: bool
+    created_at: Optional[datetime] = None
+
+
+class CustomerProfileResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    account_number: str
+    home_number: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+
+
+class LoginResponse(BaseModel):
+    token: str
+    user: UserResponse
+    profile: Optional[CustomerProfileResponse] = None
+
+
+class CustomerDashboardResponse(BaseModel):
+    user: UserResponse
+    profile: CustomerProfileResponse
+    property: Optional[PropertyResponse] = None
+    logs: List[UsageLogResponse] = []
+    payment_status: str
+    total_billed: float
+    total_paid: float
+    total_pending: float
+
+
+class CustomerListItem(BaseModel):
+    user_id: int
+    email: str
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    is_active: bool
+    account_number: str
+    home_number: Optional[str] = None
+    payment_status: str
+    total_billed: float
+    total_paid: float
+    total_pending: float
