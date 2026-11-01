@@ -56,14 +56,15 @@
 
 <script>
 const $=s=>document.querySelector(s);
-const S={props:[],sum:null,view:'login',cur:null,home:null,rate:25,manual:false,touched:false,units:0,page:0,q:'',blk:'',me:null,cust:null,clist:[],ulist:[],reg:false};
+const S={props:[],sum:null,view:'login',cur:null,home:null,rate:50,manual:false,touched:false,units:0,page:0,q:'',unpaidOnly:false,me:null,cust:null,clist:[],ulist:[],reg:false,settings:null};
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const f1=n=>(+n||0).toLocaleString('en',{maximumFractionDigits:1});
 const rs=n=>'Rs. '+(+n||0).toLocaleString('en',{maximumFractionDigits:2});
 const B=(c,t,f)=>`<button type="button" class="btn ${c}" onclick="${f}">${t}</button>`;
 const stat=(l,v,c='')=>`<div class="card p-4"><p class="text-xs opacity-70">${l}</p><p class="font-display text-xl sm:text-2xl font-extrabold ${c}">${v}</p></div>`;
 const RED='text-red-600 dark:text-red-400',LN='border-t border-ink/10 dark:border-white/10';
-const DUE_DAYS=15,LATE_PCT=5; // due date = bill date + DUE_DAYS; late fee = LATE_PCT % of an unpaid overdue bill
+// Due date + late fine now come from the backend (/settings): fixed rate,
+// owner-set due day and staged fines. Nothing about them lives in the browser.
 let T;const deb=f=>{clearTimeout(T);T=setTimeout(f,250)};
 gsap.globalTimeline.timeScale(matchMedia('(prefers-reduced-motion:reduce)').matches?100:1);
 
@@ -100,6 +101,7 @@ function modal(t,h,ok,label='Save'){
 /* ---------- Data ---------- */
 async function load(){
   [S.props,S.sum]=await Promise.all([api('/properties/?limit=2000'),api('/dashboard/summary')]);
+  try{S.settings=await api('/settings');S.rate=S.settings.rate_per_unit}catch{}
   if(S.view==='home'&&S.cur)S.home=await api('/properties/'+encodeURIComponent(S.cur))}
 async function refresh(){
   try{
@@ -116,6 +118,7 @@ async function go(v){
     if(v==='cust')S.cust=await api('/me/dashboard');
     else if(v==='customers'||v==='bill')S.clist=await api('/customers/');
     else if(v==='users')S.ulist=await api('/admin/users');
+    else if(v==='settings')S.settings=await api('/settings');
     else if(v==='login'){S.view='login';render();return}
   }catch(e){toast(e.message,1);return}
   S.view=v;render()}
@@ -124,13 +127,12 @@ async function openHome(id){try{S.cur=id;S.home=await api('/properties/'+encodeU
 
 /* ---------- Shell ---------- */
 const NAV=[['ov','Overview','◫'],['hm','Homes','⌂'],['due','Dues','₨']];
-const blocks=()=>[...new Set(S.props.map(p=>p.address_block).filter(Boolean))].sort().map(b=>`<option ${S.blk===b?'selected':''}>${esc(b)}</option>`).join('');
-const acts=()=>`<div class="space-y-2"><div><label class="lbl">Rate per unit (Rs.)</label><input type="number" min="0" step="any" class="inp" value="${S.rate}" oninput="S.rate=+this.value||0;calc()"></div>
-${B('btn-p w-full','Add home','addHome()')}${B('w-full','Generate homes','bulk()')}${B('w-full','Customers',"go('customers')")}${B('w-full','Print Bill',"go('bill')")}${S.me&&S.me.role==='super_admin'?B('w-full','Users',"go('users')"):''}${B('w-full','Download Excel',"dl('/export/excel')")}${B('w-full','Download CSV',"dl('/export/csv')")}${B('w-full','Change password',"go('pw')")}${B('w-full','Switch theme','theme()')}${B('w-full','Logout','logout()')}</div>`;
+const acts=()=>`<div class="space-y-2"><p class="text-sm opacity-70">Fixed rate: <b>${rs(S.rate)}</b> per unit (set in Settings by the owner only).</p>
+${B('btn-p w-full','Add home','addHome()')}${B('w-full','Generate homes','bulk()')}${B('w-full','Customers',"go('customers')")}${B('w-full','Print Bill',"go('bill')")}${S.me&&S.me.role==='super_admin'?B('w-full','Settings',"go('settings')"):''}${S.me&&S.me.role==='super_admin'?B('w-full','Users',"go('users')"):''}${B('w-full','Download Excel',"dl('/export/excel')")}${B('w-full','Download CSV',"dl('/export/csv')")}${B('w-full','Change password',"go('pw')")}${B('w-full','Switch theme','theme()')}${B('w-full','Logout','logout()')}</div>`;
 function buildNav(){
   if(!S.me){$('#sn').innerHTML='';$('#sa').innerHTML='';$('#bn').innerHTML='';return}
   const staff=S.me.role!=='customer',admin=S.me.role==='super_admin';
-  const items=staff?[...NAV,['customers','Customers','👥'],['bill','Print Bill','🖨'],...(admin?[['users','Users','🔑']]:[])]:[['cust','My dashboard','⌂']];
+  const items=staff?[...NAV,['customers','Customers','👥'],['bill','Print Bill','🖨'],...(admin?[['settings','Settings','⚙'],['users','Users','🔑']]:[])]:[['cust','My dashboard','⌂']];
   $('#sn').innerHTML=items.map(([k,t,i])=>`<button class="nav w-full" data-v="${k}" onclick="go('${k}')"><span>${i}</span>${t}</button>`).join('');
   $('#sa').innerHTML=staff?acts():`<div class="space-y-2">${B('w-full','Change password',"go('pw')")}${B('w-full','Switch theme','theme()')}${B('w-full','Logout','logout()')}</div>`;
   $('#bn').innerHTML=staff
@@ -147,6 +149,7 @@ function render(anim=true){
   if(S.view==='customers'){v.innerHTML=customersV();if(anim)scrollTo(0,0);return}
   if(S.view==='bill'){v.innerHTML=billV();billDraw();if(anim)scrollTo(0,0);return}
   if(S.view==='users'){v.innerHTML=usersV();if(anim)scrollTo(0,0);return}
+  if(S.view==='settings'){v.innerHTML=settingsV();settingsInit();if(anim)scrollTo(0,0);return}
   if(S.view==='pw'){v.innerHTML=pwV();if(anim)scrollTo(0,0);return}
   if(!S.props.length&&(S.view==='ov'||S.view==='hm')){
     v.innerHTML=`<div class="card p-6 max-w-lg"><h2 class="font-display text-xl font-bold mb-1">No homes yet</h2><p class="opacity-70 mb-4">Generate a batch of homes, or add one by hand.</p><div class="flex gap-2 flex-wrap">${B('btn-p','Generate homes','bulk()')}${B('','Add home','addHome()')}</div></div>`;return}
@@ -155,7 +158,7 @@ function render(anim=true){
   if(anim){scrollTo(0,0);gsap.fromTo(v,{opacity:0,y:10},{opacity:1,y:0,duration:.3,clearProps:'all'})}}
 
 /* ---------- Overview ---------- */
-const hrow=p=>`<button type="button" data-id="${esc(p.property_id)}" onclick="openHome(this.dataset.id)" class="w-full text-left flex items-center gap-3 ${LN} px-2 py-3 min-h-[56px] hover:bg-tide/5"><span class="w-24 shrink-0 font-semibold">${esc(p.property_id)}</span><span class="flex-1 min-w-0 truncate text-sm opacity-80">${esc(p.owner_name)}, ${esc(p.address_block)}</span><span class="text-right text-sm shrink-0"><b>${f1(p.cumulative_units)}</b> units<br>${p.pending_amount>0?`<span class="${RED}">${rs(p.pending_amount)} due</span>`:'<span class="text-emerald-600 dark:text-emerald-400">Settled</span>'}</span></button>`;
+const hrow=p=>{const out=p.total_payable!=null?p.total_payable:p.pending_amount;return `<button type="button" data-id="${esc(p.property_id)}" onclick="openHome(this.dataset.id)" class="w-full text-left flex items-center gap-3 ${LN} px-2 py-3 min-h-[56px] hover:bg-tide/5"><span class="w-24 shrink-0 font-semibold">${esc(p.property_id)}</span><span class="flex-1 min-w-0 truncate text-sm opacity-80">${esc(p.owner_name)}</span><span class="text-right text-sm shrink-0"><b>${f1(p.cumulative_units)}</b> units<br>${out>0?`<span class="${RED}">${rs(out)} due</span>`:'<span class="text-emerald-600 dark:text-emerald-400">Settled</span>'}</span></button>`};
 const kpi=(l,n,p='',s='')=>`<div class="card p-4"><p class="text-xs opacity-70">${l}</p><p class="kpi font-display text-2xl sm:text-3xl font-extrabold" data-v="${n}" data-p="${p}" data-s="${s}">0</p></div>`;
 function ovV(){const s=S.sum,pct=s.total_billed?Math.round(s.total_paid/s.total_billed*100):0,top=[...S.props].filter(p=>p.pending_amount>0).sort((a,b)=>b.pending_amount-a.pending_amount).slice(0,5);
   return `<h1 class="font-display text-3xl font-extrabold">Overview</h1><p class="opacity-70 mb-5">${s.unpaid_entries_count} unpaid bills across ${s.total_homes} homes.</p>
@@ -171,37 +174,37 @@ function srch(q){q=q.trim().toLowerCase();const n=q.replace(/\D/g,'');
   $('#sr').innerHTML=r.map(hrow).join('')||(q?'<p class="p-3 text-sm opacity-70">No home matches that search.</p>':'')}
 
 /* ---------- Homes ledger ---------- */
-const hmV=()=>`<h1 class="font-display text-3xl font-extrabold mb-4">Homes</h1><div class="grid sm:grid-cols-3 gap-3 mb-4"><input class="inp sm:col-span-2" placeholder="Search home ID or resident" value="${esc(S.q)}" oninput="S.q=this.value;S.page=0;hl()"><select class="inp" onchange="S.blk=this.value;S.page=0;hl()"><option value="">All blocks</option>${blocks()}</select></div><div id="hl" class="card p-2"></div><div id="pg" class="flex items-center justify-between mt-3"></div>`;
-function hl(){const q=S.q.toLowerCase(),L=S.props.filter(p=>(!S.blk||p.address_block===S.blk)&&(!q||p.property_id.toLowerCase().includes(q)||(p.owner_name||'').toLowerCase().includes(q))),N=25,pages=Math.max(1,Math.ceil(L.length/N)),pg=Math.max(0,Math.min(S.page,pages-1));S.page=pg;
+const hmV=()=>`<h1 class="font-display text-3xl font-extrabold mb-4">Homes</h1><div class="grid sm:grid-cols-3 gap-3 mb-4"><input class="inp sm:col-span-2" placeholder="Search home ID or resident" value="${esc(S.q)}" oninput="S.q=this.value;S.page=0;hl()"><label class="inp flex items-center gap-2 cursor-pointer"><input type="checkbox" ${S.unpaidOnly?'checked':''} onchange="S.unpaidOnly=this.checked;S.page=0;hl()"> Unpaid only</label></div><div id="hl" class="card p-2"></div><div id="pg" class="flex items-center justify-between mt-3"></div>`;
+function hl(){const q=S.q.toLowerCase(),L=S.props.filter(p=>(!S.unpaidOnly||(p.total_payable!=null?p.total_payable:p.pending_amount)>0)&&(!q||p.property_id.toLowerCase().includes(q)||(p.owner_name||'').toLowerCase().includes(q))),N=25,pages=Math.max(1,Math.ceil(L.length/N)),pg=Math.max(0,Math.min(S.page,pages-1));S.page=pg;
   $('#hl').innerHTML=L.slice(pg*N,pg*N+N).map(hrow).join('')||'<p class="p-4 text-sm opacity-70">No homes match these filters.</p>';
   $('#pg').innerHTML=L.length>N?`${B('',"Previous",`S.page=${Math.max(0,pg-1)};hl()`)}<span class="text-sm">Page ${pg+1} of ${pages}</span>${B('','Next',`S.page=${pg+1};hl()`)}`:`<span class="text-sm opacity-70">${L.length} homes</span>`}
 
 /* ---------- Dues ---------- */
-const dueV=()=>`<h1 class="font-display text-3xl font-extrabold">Unpaid dues</h1><p id="dt" class="opacity-70 mb-4">Loading...</p><div class="grid sm:grid-cols-3 gap-3 mb-4"><input id="dq" class="inp sm:col-span-2" placeholder="Search home, resident or period" oninput="deb(dues)"><select id="db" class="inp" onchange="dues()"><option value="">All blocks</option>${blocks()}</select></div><div id="dl" class="card p-2"></div>`;
+const dueV=()=>`<h1 class="font-display text-3xl font-extrabold">Unpaid dues</h1><p id="dt" class="opacity-70 mb-4">Loading...</p><div class="grid sm:grid-cols-3 gap-3 mb-4"><input id="dq" class="inp sm:col-span-2" placeholder="Search home, resident or period" oninput="deb(dues)"></div><div id="dl" class="card p-2"></div>`;
 async function dues(){try{
-  const q=$('#dq')?.value||'',b=$('#db')?.value||'',d=await api(`/usage/unpaid/?limit=300&search=${encodeURIComponent(q)}&block=${encodeURIComponent(b)}`);
+  const q=$('#dq')?.value||'',d=await api(`/usage/unpaid/?limit=300&search=${encodeURIComponent(q)}`);
   if(!$('#dl'))return;
   $('#dt').textContent=`${d.total_count} unpaid bills, ${rs(d.total_amount)} pending.`;
-  $('#dl').innerHTML=d.items.map(i=>`<div class="flex flex-wrap items-center gap-x-4 gap-y-2 ${LN} px-2 py-3"><button type="button" data-id="${esc(i.property_id)}" onclick="openHome(this.dataset.id)" class="text-left flex-1 min-w-[10rem]"><b>${esc(i.property_id)}</b><br><span class="text-xs opacity-70">${esc(i.owner_name)}, ${esc(i.billing_period)}</span></button><span class="text-sm">${f1(i.added_units)} units</span><b>${rs(i.bill_amount)}</b>${B('btn-p !min-h-[36px] !px-3','Mark paid',`pay(${i.log_id},'PAID','${esc(i.property_id)}')`)}</div>`).join('')||'<p class="p-4 text-sm opacity-70">Nothing is overdue. Every bill is paid.</p>'
+  $('#dl').innerHTML=d.items.map(i=>`<div class="flex flex-wrap items-center gap-x-4 gap-y-2 ${LN} px-2 py-3"><button type="button" data-id="${esc(i.property_id)}" onclick="openHome(this.dataset.id)" class="text-left flex-1 min-w-[10rem]"><b>${esc(i.property_id)}</b><br><span class="text-xs opacity-70">${esc(i.owner_name)}, ${esc(i.billing_period)}</span></button><span class="text-sm">${f1(i.added_units)} units × ${rs(i.rate_per_unit||S.rate)}</span><span class="text-sm">Bill ${rs(i.bill_amount)}${i.late_fine>0?` + fine ${rs(i.late_fine)}`:''}<br><span class="opacity-60">Due ${i.due_date||'-'}</span></span><b>${rs(i.total_payable)}</b>${B('btn-p !min-h-[36px] !px-3','Mark paid',`pay(${i.log_id},'PAID','${esc(i.property_id)}')`)}</div>`).join('')||'<p class="p-4 text-sm opacity-70">Nothing is overdue. Every bill is paid.</p>'
 }catch(e){toast(e.message,1)}}
 
 /* ---------- Home detail ---------- */
 function homeV(){const h=S.home,L=[...h.logs].sort((a,b)=>b.log_id-a.log_id),pend=h.pending_amount,d=new Date(),per=d.toLocaleString('en',{month:'short'})+'-'+d.getFullYear();
   return `${B('mb-3','← Homes',"go('hm')")}
-<div class="flex flex-wrap items-start justify-between gap-3 mb-5"><div><h1 class="font-display text-3xl font-extrabold">${esc(h.property_id)}</h1><p class="opacity-70">${esc(h.owner_name)}, ${esc(h.address_block)}</p></div><div class="flex flex-wrap gap-2">${B('','Edit','editHome()')}${B('','Print slip','slip()')}${pend>0?B('btn-p','Mark all paid','payAll()'):''}</div></div>
-<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">${stat('Total units',f1(h.cumulative_units))}${stat('Last meter reading',f1(h.last_meter_reading))}${stat('Billed',rs(h.cumulative_billed_amount))}${stat('Pending',rs(pend),pend>0?RED:'')}</div>
+<div class="flex flex-wrap items-start justify-between gap-3 mb-5"><div><h1 class="font-display text-3xl font-extrabold">${esc(h.property_id)}</h1><p class="opacity-70">${esc(h.owner_name)}</p></div><div class="flex flex-wrap gap-2">${B('','Edit','editHome()')}${B('','Print slip','slip()')}${pend>0?B('btn-p','Mark all paid','payAll()'):''}</div></div>
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">${stat('Total units',f1(h.cumulative_units))}${stat('Last meter reading',f1(h.last_meter_reading))}${stat('Billed',rs(h.cumulative_billed_amount))}${stat('Total payable',rs(h.total_payable!=null?h.total_payable:pend),(h.total_payable!=null?h.total_payable:pend)>0?RED:'')}</div>
 <form class="card p-4 mb-5" onsubmit="event.preventDefault();save()">
 <div class="flex items-center justify-between mb-3"><h2 class="font-display text-lg font-bold">New reading</h2><label class="text-xs flex items-center gap-2 min-h-[44px]"><input type="checkbox" ${S.manual?'checked':''} onchange="S.manual=this.checked;S.touched=false;render(false)"> Enter units manually</label></div>
 <div class="grid sm:grid-cols-3 lg:grid-cols-4 gap-3">
 <div><label class="lbl">Billing period</label><input id="per" class="inp" value="${per}"></div>
 ${S.manual?`<div><label class="lbl">Units used</label><input id="mu" type="number" step="any" min="0" class="inp" oninput="calc()"></div>`:`<div><label class="lbl">Previous reading</label><div class="inp flex items-center opacity-70">${f1(h.last_meter_reading)}</div></div><div><label class="lbl">Current reading</label><input id="cr" type="number" step="any" min="0" class="inp" oninput="calc()"></div>`}
-<div><label class="lbl">Bill (Rs.)</label><input id="bill" type="number" step="any" min="0" class="inp" oninput="S.touched=true"></div></div>
+<div><label class="lbl">Bill (Rs.) — auto, fixed rate ${rs(S.rate)}/unit</label><input id="bill" type="number" step="any" min="0" class="inp opacity-70" readonly></div></div>
 <div class="flex items-center justify-between gap-3 mt-3"><p id="up" class="text-sm font-semibold"></p><button class="btn btn-p">Save reading</button></div></form>
 <div class="card p-2 sm:p-4"><h2 class="font-display text-lg font-bold p-2 sm:p-0 sm:mb-2">History</h2>${L.map(row).join('')||'<p class="p-3 text-sm opacity-70">No readings yet. Save the first one above.</p>'}</div>`}
 function row(l){const op=l.billing_period==='OPENING-BALANCE',paid=l.payment_status==='PAID';
   return `<div class="flex flex-wrap items-center gap-x-4 gap-y-2 ${LN} px-2 py-3"><div class="w-28"><p class="font-semibold">${op?'Opening balance':esc(l.billing_period)}</p><p class="text-xs opacity-60">${(l.entry_date||'').slice(0,10)}</p></div>
 <div class="text-sm flex-1 min-w-[9rem]">${op?`Meter ${f1(l.current_reading)}`:l.current_reading!=null?`${f1(l.previous_reading)} to ${f1(l.current_reading)}`:'Manual units'}<br><b>+${f1(l.added_units)} units</b> <span class="opacity-60">(total ${f1(l.new_total_units)})</span></div>
-${op?'':`<b class="w-28 sm:text-right">${rs(l.bill_amount)}</b><button type="button" onclick="pay(${l.log_id},'${paid?'UNPAID':'PAID'}')" class="rounded-full px-3 min-h-[36px] text-xs font-semibold ${paid?'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300':'bg-red-500/15 text-red-700 dark:text-red-300'}">${paid?'Paid':'Unpaid'}</button><div class="flex gap-1">${paid?B('!min-h-[36px] !px-3','Receipt',`printReceipt(${l.log_id})`):''}${B('!min-h-[36px] !px-3','Edit',`editLog(${l.log_id})`)}${B('btn-d !min-h-[36px] !px-3','Delete',`delLog(${l.log_id})`)}</div>`}</div>`}
+${op?'':`<b class="w-28 sm:text-right">${rs(l.bill_amount)}${l.late_fine>0?`<br><span class="text-xs font-normal ${RED}">+ fine ${rs(l.late_fine)}</span>`:''}<br><span class="text-xs font-normal opacity-60">Due ${l.due_date||'-'} · ${rs(l.rate_per_unit||S.rate)}/unit</span></b><button type="button" onclick="pay(${l.log_id},'${paid?'UNPAID':'PAID'}')" class="rounded-full px-3 min-h-[36px] text-xs font-semibold ${paid?'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300':'bg-red-500/15 text-red-700 dark:text-red-300'}">${paid?'Paid':'Unpaid'}</button><div class="flex gap-1">${B('!min-h-[36px] !px-3','Print',`printBillFor(${l.log_id})`)}${paid?B('!min-h-[36px] !px-3','Receipt',`printReceipt(${l.log_id})`):''}${B('!min-h-[36px] !px-3','Edit',`editLog(${l.log_id})`)}${B('btn-d !min-h-[36px] !px-3','Delete',`delLog(${l.log_id})`)}</div>`}</div>`}
 function calc(){const c=$('#cr'),m=$('#mu');if(!S.home||(!c&&!m))return;
   const raw=(c||m).value,v=+raw||0,u=c?v-S.home.last_meter_reading:v;S.units=u;const e=$('#up');
   e.textContent=!raw?'':u>0?`${f1(u)} units${S.rate?', about '+rs(u*S.rate):''}`:'Current reading must be above '+f1(S.home.last_meter_reading);
@@ -217,24 +220,24 @@ function save(){const h=S.home,p=$('#per').value.trim();calc();
 const pay=async(id,s,pid)=>{const ok=await run(()=>api(`/usage/${id}/payment`,{method:'PATCH',body:{status:s}}),s==='PAID'?'Marked paid':'Marked unpaid');if(ok&&s==='PAID'&&confirm('Print receipt?'))printReceipt(id,pid)};
 const payAll=()=>run(()=>api(`/properties/${encodeURIComponent(S.cur)}/pay-all`,{method:'POST'}),'All bills marked paid');
 function editLog(id){const l=S.home.logs.find(x=>x.log_id===id),r=l.current_reading!=null;
-  modal('Edit entry',`<div><label class="lbl">Billing period</label><input name="p" class="inp" required value="${esc(l.billing_period)}"></div><div><label class="lbl">${r?'Current reading':'Units used'}</label><input name="v" type="number" step="any" min="0" required class="inp" value="${r?l.current_reading:l.added_units}"></div><div><label class="lbl">Bill (Rs.)</label><input name="b" type="number" step="any" min="0" class="inp" value="${l.bill_amount}"></div>${r?`<p class="text-xs opacity-70">Previous reading is ${f1(l.previous_reading)}. Later entries are recalculated.</p>`:''}`,
-  f=>{const d=Object.fromEntries(new FormData(f)),body={billing_period:d.p,bill_amount:+d.b||0};body[r?'current_reading':'added_units']=+d.v;
+  modal('Edit entry',`<div><label class="lbl">Billing period</label><input name="p" class="inp" required value="${esc(l.billing_period)}"></div><div><label class="lbl">${r?'Current reading':'Units used'}</label><input name="v" type="number" step="any" min="0" required class="inp" value="${r?l.current_reading:l.added_units}"></div><p class="text-xs opacity-70">Bill auto-prices at this bill's frozen rate (${rs(l.rate_per_unit||S.rate)}/unit) — the bill amount is not typed here.</p>${r?`<p class="text-xs opacity-70">Previous reading is ${f1(l.previous_reading)}. Later entries are recalculated.</p>`:''}`,
+  f=>{const d=Object.fromEntries(new FormData(f)),body={billing_period:d.p};body[r?'current_reading':'added_units']=+d.v;
     return run(()=>api('/usage/'+id,{method:'PUT',body}),'Entry updated')})}
 const delLog=id=>modal('Delete this entry?','<p class="text-sm">Totals and later readings are recalculated after the delete.</p>',()=>run(()=>api('/usage/'+id,{method:'DELETE'}),'Entry deleted'),'Delete');
 function editHome(){const h=S.home;
-  modal('Edit home',`<div><label class="lbl">Resident name</label><input name="o" class="inp" value="${esc(h.owner_name)}"></div><div><label class="lbl">Block</label><input name="b" class="inp" value="${esc(h.address_block)}"></div><div><label class="lbl">New home ID (optional)</label><input name="n" class="inp" placeholder="${esc(h.property_id)}"><p class="text-xs opacity-60 mt-1">History moves to the new ID.</p></div>`,
+  modal('Edit home',`<div><label class="lbl">Resident name</label><input name="o" class="inp" value="${esc(h.owner_name)}"></div><div><label class="lbl">New home ID (optional)</label><input name="n" class="inp" placeholder="${esc(h.property_id)}"><p class="text-xs opacity-60 mt-1">History moves to the new ID.</p></div>`,
   f=>{const d=Object.fromEntries(new FormData(f)),id=encodeURIComponent(h.property_id);
-    return run(async()=>{await api('/properties/'+id,{method:'PUT',body:{owner_name:d.o,address_block:d.b}});
+    return run(async()=>{await api('/properties/'+id,{method:'PUT',body:{owner_name:d.o}});
       if(d.n.trim()){const r=await api(`/properties/${id}/rename`,{method:'PUT',body:{new_property_id:d.n.trim()}});S.cur=r.property_id}},'Home updated')})}
-function addHome(){modal('Add home',`<div><label class="lbl">Home ID</label><input name="id" class="inp" required placeholder="HOME-501"></div><div><label class="lbl">Resident name</label><input name="o" class="inp"></div><div><label class="lbl">Block</label><input name="b" class="inp" value="Block A"></div><div class="grid grid-cols-2 gap-3"><div><label class="lbl">Opening units</label><input name="u" type="number" step="any" min="0" value="0" class="inp"></div><div><label class="lbl">Opening meter reading</label><input name="m" type="number" step="any" min="0" value="0" class="inp"></div></div>`,
+function addHome(){modal('Add home',`<div><label class="lbl">Home ID</label><input name="id" class="inp" required placeholder="HOME-501"></div><div><label class="lbl">Resident name</label><input name="o" class="inp"></div><div class="grid grid-cols-2 gap-3"><div><label class="lbl">Opening units</label><input name="u" type="number" step="any" min="0" value="0" class="inp"></div><div><label class="lbl">Opening meter reading</label><input name="m" type="number" step="any" min="0" value="0" class="inp"></div></div>`,
   f=>{const d=Object.fromEntries(new FormData(f));
-    return run(()=>api('/properties/',{method:'POST',body:{property_id:d.id,owner_name:d.o||'Unassigned',address_block:d.b,initial_units:+d.u||0,initial_meter_reading:+d.m||0}}),'Home added')})}
-function bulk(){modal('Generate homes',`<div class="grid grid-cols-2 gap-3"><div><label class="lbl">ID prefix</label><input name="p" class="inp" value="HOME-"></div><div><label class="lbl">Block</label><input name="b" class="inp" value="Block A"></div><div><label class="lbl">Start number</label><input name="s" type="number" min="1" value="1" class="inp"></div><div><label class="lbl">How many</label><input name="c" type="number" min="1" max="1000" value="100" class="inp"></div></div>`,
+    return run(()=>api('/properties/',{method:'POST',body:{property_id:d.id,owner_name:d.o||'Unassigned',initial_units:+d.u||0,initial_meter_reading:+d.m||0}}),'Home added')})}
+function bulk(){modal('Generate homes',`<div class="grid grid-cols-2 gap-3"><div><label class="lbl">ID prefix</label><input name="p" class="inp" value="HOME-"></div><div><label class="lbl">Start number</label><input name="s" type="number" min="1" value="1" class="inp"></div><div><label class="lbl">How many</label><input name="c" type="number" min="1" max="1000" value="100" class="inp"></div></div>`,
   f=>{const d=Object.fromEntries(new FormData(f));let r;
-    return run(async()=>{r=await api('/properties/bulk-generate/',{method:'POST',body:{prefix:d.p,start_number:+d.s,count:+d.c,address_block:d.b}})},()=>`Created ${r.created_count} homes, skipped ${r.skipped_count}`)},'Generate')}
+    return run(async()=>{r=await api('/properties/bulk-generate/',{method:'POST',body:{prefix:d.p,start_number:+d.s,count:+d.c}})},()=>`Created ${r.created_count} homes, skipped ${r.skipped_count}`)},'Generate')}
 function slip(){const h=S.home,l=[...h.logs].filter(x=>x.billing_period!=='OPENING-BALANCE').sort((a,b)=>b.log_id-a.log_id)[0];
   if(!l)return toast('Save a reading first to print a slip',1);
-  const r=[['Home ID',h.property_id],['Resident',h.owner_name],['Block',h.address_block],['Period',l.billing_period],['Meter',l.current_reading!=null?`${f1(l.previous_reading)} -> ${f1(l.current_reading)}`:'Manual units'],['Units',`+${f1(l.added_units)}`],['Cumulative',`${f1(l.new_total_units)} units`],['Bill',rs(l.bill_amount)],['Status',l.payment_status],['Printed',new Date().toLocaleString()]];
+  const r=[['Home ID',h.property_id],['Resident',h.owner_name],['Period',l.billing_period],['Meter',l.current_reading!=null?`${f1(l.previous_reading)} -> ${f1(l.current_reading)}`:'Manual units'],['Units',`+${f1(l.added_units)}`],['Cumulative',`${f1(l.new_total_units)} units`],['Bill',rs(l.bill_amount)],['Status',l.payment_status],['Printed',new Date().toLocaleString()]];
   $('#slip').innerHTML=`<pre style="font:15px/1.7 ui-monospace,monospace;max-width:420px">UTILITY USAGE SLIP\n====================================\n${r.map(([k,v])=>k.padEnd(11)+': '+esc(v)).join('\n')}\n====================================</pre>`;print()}
 
 /* ---------- Three.js background (desktop only, light) ---------- */
@@ -250,36 +253,36 @@ function slip(){const h=S.home,l=[...h.logs].filter(x=>x.billing_period!=='OPENI
 
 /* ---------- Print bill ---------- */
 const dtp=x=>{const e=String(x||'');return new Date(/Z|[+-]\d\d:?\d\d$/.test(e)?e:e+'Z')};
-const dueOf=l=>{const d=dtp(l.entry_date);return isNaN(d)?null:new Date(d.getTime()+DUE_DAYS*864e5)};
-const lateFee=l=>{const d=dueOf(l);return l.payment_status!=='PAID'&&l.billing_period!=='OPENING-BALANCE'&&d&&new Date()>d?Math.round(l.bill_amount*LATE_PCT)/100:0};
+const dueOf=l=>{if(l.due_date)return new Date(l.due_date+'T00:00:00');const d=dtp(l.entry_date);return isNaN(d)?null:d};
+const lateFee=l=>{if(l.payment_status==='PAID')return 0;return +(l.late_fine||0)};
 function billHtml(d,mode){
   const all=[...d.logs].filter(x=>x.billing_period!=='OPENING-BALANCE').sort((a,b)=>a.log_id-b.log_id);
   let L=all;
   if(mode==='latest')L=all.slice(-1);else if(mode==='unpaid')L=all.filter(x=>x.payment_status!=='PAID');
   const pend=Math.max(0,d.billed-d.paid),late=all.reduce((a,l)=>a+lateFee(l),0),st=pend>0?'UNPAID':'PAID',now=new Date();
   const bn='BILL-'+String(d.account||d.home).replace(/\W/g,'')+'-'+now.toISOString().slice(0,10).replace(/-/g,'');
-  const rows=L.map(l=>{const du=dueOf(l),lf=lateFee(l);return `<tr><td>${esc(l.billing_period)}</td><td class="n">${l.current_reading!=null?f1(l.previous_reading):'-'}</td><td class="n">${l.current_reading!=null?f1(l.current_reading):'-'}</td><td class="n">${f1(l.added_units)}</td><td class="n">${rs(l.bill_amount)}</td><td>${du?du.toLocaleDateString('en-GB'):'-'}</td><td class="n">${lf>0?rs(lf):'-'}</td><td>${esc(l.payment_status)}</td></tr>`}).join('')||'<tr><td colspan="8">No bills to show.</td></tr>';
+  const rows=L.map(l=>{const du=dueOf(l),lf=lateFee(l);return `<tr><td>${esc(l.billing_period)}</td><td class="n">${l.current_reading!=null?f1(l.previous_reading):'-'}</td><td class="n">${l.current_reading!=null?f1(l.current_reading):'-'}</td><td class="n">${f1(l.added_units)}</td><td class="n">${rs(l.rate_per_unit||S.rate)}</td><td class="n">${rs(l.bill_amount)}</td><td>${du?du.toLocaleDateString('en-GB'):'-'}</td><td class="n">${lf>0?rs(lf):'-'}</td><td class="n">${rs(l.bill_amount+lf)}</td><td>${esc(l.payment_status)}</td></tr>`}).join('')||'<tr><td colspan="10">No bills to show.</td></tr>';
   return `<div class="bill"><div class="row"><div><h2>UTILITY BILL</h2><div>Residential Utility Usage Tracker</div></div><div style="text-align:right"><div><b>Bill No:</b> ${esc(bn)}</div><div><b>Date:</b> ${now.toLocaleDateString('en-GB')}</div></div></div>
 <hr style="margin:14px 0;border:0;border-top:2px solid #111">
-<div class="row"><div><div><b>Customer:</b> ${esc(d.name||'-')}</div><div><b>Account No:</b> ${esc(d.account||'-')}</div><div><b>Home ID:</b> ${esc(d.home||'-')}</div></div><div><div><b>Block:</b> ${esc(d.block||'-')}</div><div><b>Phone:</b> ${esc(d.phone||'-')}</div><div><b>Email:</b> ${esc(d.email||'-')}</div></div></div>
-<table><thead><tr><th>Period</th><th class="n">Prev. reading</th><th class="n">Curr. reading</th><th class="n">Units</th><th class="n">Amount</th><th>Due date</th><th class="n">Late fee</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
+<div class="row"><div><div><b>Customer:</b> ${esc(d.name||'-')}</div><div><b>Account No:</b> ${esc(d.account||'-')}</div><div><b>Home ID:</b> ${esc(d.home||'-')}</div></div><div><div><b>Phone:</b> ${esc(d.phone||'-')}</div><div><b>Email:</b> ${esc(d.email||'-')}</div></div></div>
+<table><thead><tr><th>Period</th><th class="n">Prev. reading</th><th class="n">Curr. reading</th><th class="n">Units</th><th class="n">Rate</th><th class="n">Amount</th><th>Due date</th><th class="n">Late fee</th><th class="n">Total payable</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="row" style="align-items:flex-end"><div><span class="stamp ${st==='PAID'?'paid':'unpaid'}">${st}</span></div>
-<div class="tot"><div><span>Total billed</span><b>${rs(d.billed)}</b></div><div><span>Total paid</span><b>${rs(d.paid)}</b></div><div><span>Pending dues</span><b>${rs(pend)}</b></div>${late>0?`<div><span>Late fee (${LATE_PCT}%)</span><b>${rs(late)}</b></div>`:''}<div style="border-top:2px solid #111;margin-top:4px;padding-top:6px"><span>Total payable</span><b>${rs(pend+late)}</b></div></div></div>
-<p style="margin-top:18px;font-size:12px;color:#555">Bills are due ${DUE_DAYS} days after the bill date. A late fee of ${LATE_PCT}% applies to unpaid bills after the due date. This is a computer-generated bill.</p></div>`}
+<div class="tot"><div><span>Total billed</span><b>${rs(d.billed)}</b></div><div><span>Total paid</span><b>${rs(d.paid)}</b></div><div><span>Pending dues</span><b>${rs(pend)}</b></div>${late>0?`<div><span>Late fee</span><b>${rs(late)}</b></div>`:''}<div style="border-top:2px solid #111;margin-top:4px;padding-top:6px"><span>Bill + Fine = Total payable</span><b>${rs(pend+late)}</b></div></div></div>
+<p style="margin-top:18px;font-size:12px;color:#555">Due date and late-fine stages are set by the owner in Settings. A fine applies only to unpaid bills after their due date and stops increasing once a bill is marked paid. This is a computer-generated bill.</p></div>`}
 function receiptHtml(d,l){const pd=l.paid_date?dtp(l.paid_date):new Date();
   return `<div class="bill"><div class="row"><div><h2>PAYMENT RECEIPT</h2><div>Residential Utility Usage Tracker</div></div><div style="text-align:right"><div><b>Receipt No:</b> RCPT-${l.log_id}</div><div><b>Paid on:</b> ${pd.toLocaleDateString('en-GB')}</div></div></div>
 <hr style="margin:14px 0;border:0;border-top:2px solid #111">
-<div class="row"><div><div><b>Customer:</b> ${esc(d.name||'-')}</div><div><b>Account No:</b> ${esc(d.account||'-')}</div><div><b>Home ID:</b> ${esc(d.home||'-')}</div></div><div><div><b>Block:</b> ${esc(d.block||'-')}</div><div><b>Phone:</b> ${esc(d.phone||'-')}</div></div></div>
+<div class="row"><div><div><b>Customer:</b> ${esc(d.name||'-')}</div><div><b>Account No:</b> ${esc(d.account||'-')}</div><div><b>Home ID:</b> ${esc(d.home||'-')}</div></div><div><div><b>Phone:</b> ${esc(d.phone||'-')}</div></div></div>
 <table><thead><tr><th>Period</th><th class="n">Units</th><th class="n">Amount received</th><th>Status</th></tr></thead><tbody><tr><td>${esc(l.billing_period)}</td><td class="n">${f1(l.added_units)}</td><td class="n">${rs(l.bill_amount)}</td><td>${esc(l.payment_status)}</td></tr></tbody></table>
 <div class="row" style="align-items:flex-end"><div><span class="stamp paid">PAID</span></div><div class="tot"><div style="border-top:2px solid #111;padding-top:6px"><span>Amount received</span><b>${rs(l.bill_amount)}</b></div></div></div>
 <p style="margin-top:18px;font-size:12px;color:#555">Thank you for your payment. This is a computer-generated receipt.</p></div>`}
 async function printReceipt(id,pid){try{pid=pid||S.cur;const h=await api('/properties/'+encodeURIComponent(pid)),l=h.logs.find(x=>x.log_id===id);if(!l)return toast('Bill not found',1);
   if(!S.clist.length)try{S.clist=await api('/customers/')}catch{}
   const c=S.clist.find(x=>x.home_number===h.property_id)||{};
-  $('#slip').innerHTML=receiptHtml({name:c.full_name||h.owner_name,account:c.account_number,home:h.property_id,block:h.address_block,phone:c.phone},l);print()}catch(e){toast(e.message,1)}}
-async function bulkPrint(){const blk=$('#bb').value,mode=$('#bk').value;
+  $('#slip').innerHTML=receiptHtml({name:c.full_name||h.owner_name,account:c.account_number,home:h.property_id,phone:c.phone},l);print()}catch(e){toast(e.message,1)}}
+async function bulkPrint(){const mode=$('#bk').value;
   try{if(!S.props.length)await load();
-    let P=S.props.filter(p=>!blk||p.address_block===blk);if(mode==='unpaid')P=P.filter(p=>p.pending_amount>0);
+    let P=S.props;if(mode==='unpaid')P=P.filter(p=>(p.total_payable!=null?p.total_payable:p.pending_amount)>0);
     if(!P.length)return toast('No matching homes',1);
     if(P.length>200&&!confirm(P.length+' bills will be prepared. Continue?'))return;
     toast('Preparing '+P.length+' bills...');
@@ -287,11 +290,11 @@ async function bulkPrint(){const blk=$('#bb').value,mode=$('#bk').value;
     const out=[];
     for(let i=0;i<P.length;i+=10){const part=await Promise.all(P.slice(i,i+10).map(p=>api('/properties/'+encodeURIComponent(p.property_id))));
       part.forEach(h=>{const c=S.clist.find(x=>x.home_number===h.property_id)||{};
-        out.push(billHtml({name:c.full_name||h.owner_name,account:c.account_number,home:h.property_id,block:h.address_block,phone:c.phone,email:c.email,logs:h.logs,billed:h.cumulative_billed_amount,paid:h.cumulative_paid_amount},mode))})}
+        out.push(billHtml({name:c.full_name||h.owner_name,account:c.account_number,home:h.property_id,phone:c.phone,email:c.email,logs:h.logs,billed:h.cumulative_billed_amount,paid:h.cumulative_paid_amount},mode))})}
     $('#slip').innerHTML=out.join('');print()}catch(e){toast(e.message,1)}}
 const billV=()=>`<h1 class="font-display text-3xl font-extrabold mb-4">Print bill</h1>
 <form class="card p-4 mb-4 grid sm:grid-cols-4 gap-3" onsubmit="event.preventDefault();billShow()"><input id="bq" class="inp sm:col-span-2" placeholder="Customer number (e.g. 1) or home ID" value="${esc(S.bq||'')}"><select id="bm" class="inp" onchange="S.bm=this.value;billDraw()">${[['latest','Latest bill only'],['all','Full history'],['unpaid','Unpaid only']].map(([k,t])=>`<option value="${k}" ${(S.bm||'latest')===k?'selected':''}>${t}</option>`).join('')}</select><button class="btn btn-p">Show bill</button></form>
-<div class="card p-4 mb-4"><h2 class="font-display text-lg font-bold mb-2">Bulk print</h2><div class="grid sm:grid-cols-4 gap-3"><select id="bb" class="inp"><option value="">All blocks</option>${[...new Set(S.props.map(p=>p.address_block).filter(Boolean))].sort().map(b=>`<option>${esc(b)}</option>`).join('')}</select><select id="bk" class="inp"><option value="unpaid">Only unpaid bills</option><option value="latest">Latest bill of every home</option></select><button type="button" class="btn btn-p sm:col-span-2" onclick="bulkPrint()">Print all bills</button></div></div><div id="bo"></div>`;
+<div class="card p-4 mb-4"><h2 class="font-display text-lg font-bold mb-2">Bulk print</h2><div class="grid sm:grid-cols-4 gap-3"><select id="bk" class="inp"><option value="unpaid">Only unpaid bills</option><option value="latest">Latest bill of every home</option></select><button type="button" class="btn btn-p sm:col-span-2" onclick="bulkPrint()">Print all bills</button></div></div><div id="bo"></div>`;
 function billFind(q){q=q.toLowerCase();const dg=x=>String(x||'').replace(/\D/g,''),num=/^\d+$/.test(q)?+q:null,A=S.clist;
   const eq=(f)=>A.find(c=>String(f(c)||'').toLowerCase()===q);
   return eq(c=>c.account_number)||eq(c=>c.home_number)
@@ -308,10 +311,44 @@ function billDraw(){const o=$('#bo');if(!o)return;
   if(S.berr){o.innerHTML=`<div class="card p-4 ${RED}">${esc(S.berr)}</div>`;return}
   if(!S.bill){o.innerHTML='<p class="opacity-70">Type a customer number above and press Show bill.</p>';return}
   const {c,h}=S.bill;
-  o.innerHTML=billHtml({name:c.full_name||h.owner_name||c.email,account:c.account_number,home:h.property_id,block:h.address_block,phone:c.phone,email:c.email,logs:h.logs,billed:h.cumulative_billed_amount,paid:h.cumulative_paid_amount},S.bm||'latest')+`<div class="text-center mt-4">${B('btn-p','Print bill','printBill()')}</div>`}
+  o.innerHTML=billHtml({name:c.full_name||h.owner_name||c.email,account:c.account_number,home:h.property_id,phone:c.phone,email:c.email,logs:h.logs,billed:h.cumulative_billed_amount,paid:h.cumulative_paid_amount},S.bm||'latest')+`<div class="text-center mt-4">${B('btn-p','Print bill','printBill()')}</div>`}
 function printBill(){const b=$('#bo .bill');if(!b)return toast('Show a bill first',1);$('#slip').innerHTML=b.outerHTML;print()}
 function printMine(){const c=S.cust;if(!c||!c.property)return toast('No home linked yet',1);
-  $('#slip').innerHTML=billHtml({name:c.user.full_name||c.user.email,account:c.profile.account_number,home:c.property.property_id,block:c.property.address_block,phone:c.profile.phone||c.user.phone,email:c.user.email,logs:c.logs,billed:c.total_billed,paid:c.total_paid},'latest');print()}
+  $('#slip').innerHTML=billHtml({name:c.user.full_name||c.user.email,account:c.profile.account_number,home:c.property.property_id,phone:c.profile.phone||c.user.phone,email:c.user.email,logs:c.logs,billed:c.total_billed,paid:c.total_paid},'latest');print()}
+
+
+/* ---------- Settings (owner / super_admin only) ---------- */
+function settingsV(){const st=S.settings||{rate_per_unit:50,due_day:20,fine_stages:[]};
+  const rows=(st.fine_stages||[]).map((f,i)=>`<div class="grid grid-cols-2 gap-3" data-stage><div><label class="lbl">Fine starts after (days late)</label><input name="days" type="number" min="0" class="inp" value="${f.days_after_due}"></div><div><label class="lbl">Fine amount (Rs.)</label><input name="amt" type="number" min="0" step="any" class="inp" value="${f.amount}"></div></div>`).join('');
+  return `<h1 class="font-display text-3xl font-extrabold mb-1">Settings</h1><p class="opacity-70 mb-5 text-sm">Only the owner (super_admin) can change these. Customers never see this page.</p>
+<form class="card p-4 space-y-4" onsubmit="event.preventDefault();saveSettings(this)">
+<div class="grid sm:grid-cols-2 gap-3">
+<div><label class="lbl">Fixed rate per unit (Rs.)</label><input name="rate" type="number" min="0" step="any" required class="inp" value="${st.rate_per_unit}"></div>
+<div><label class="lbl">Monthly due day (1–31)</label><input name="due" type="number" min="1" max="31" required class="inp" value="${st.due_day}"></div></div>
+<p class="text-xs opacity-70">Due date for a bill = the next occurrence of this day on/after the bill date (clamped to the month's last day). Old bills keep the due date they were created with — changing the due day affects new bills only.</p>
+<div><h2 class="font-display text-lg font-bold mb-2">Late-fine stages</h2><p class="text-xs opacity-70 mb-3">A stage applies once a bill is more than that many days late. The fine is that stage's amount (not added up). Example: 0 days → Rs. 1000 from day 1 late; 15 days → Rs. 2000 after 15 days late; 30 days → Rs. 3000 after 30 days late. Marking a bill paid freezes its fine.</p>
+<div id="stages" class="space-y-3">${rows||'<p class="text-sm opacity-70">No fine stages — add one below.</p>'}</div>
+<div class="flex gap-2 mt-3">${B('','Add stage','addStage()')}</div></div>
+<button class="btn btn-p w-full">Save settings</button></form>`}
+function settingsInit(){}
+function addStage(){const w=$('#stages');if(!w)return;const d=document.createElement('div');d.className='grid grid-cols-2 gap-3';d.setAttribute('data-stage','');
+  d.innerHTML=`<div><label class="lbl">Fine starts after (days late)</label><input name="days" type="number" min="0" class="inp" value="0"></div><div><label class="lbl">Fine amount (Rs.)</label><input name="amt" type="number" min="0" step="any" class="inp" value="0"></div>`;w.append(d)}
+async function saveSettings(f){const d=Object.fromEntries(new FormData(f));
+  const stages=[...f.querySelectorAll('[data-stage]')].map(r=>({days_after_due:+r.querySelector('[name=days]').value||0,amount:+r.querySelector('[name=amt]').value||0}));
+  await run(async()=>{S.settings=await api('/settings',{method:'PUT',body:{rate_per_unit:+d.rate,due_day:+d.due, fine_stages:stages}});S.rate=S.settings.rate_per_unit},'Settings saved')}
+/* ---------- Single-bill print ---------- */
+function singleBillHtml(d,l){const du=dueOf(l),lf=+(l.late_fine||0),paid=l.payment_status==='PAID';
+  return `<div class="bill"><div class="row"><div><h2>UTILITY BILL</h2><div>Residential Utility Usage Tracker</div></div><div style="text-align:right"><div><b>Bill No:</b> BILL-${esc(d.home)}-${esc(l.billing_period)}</div><div><b>Date:</b> ${new Date().toLocaleDateString('en-GB')}</div></div></div>
+<hr style="margin:14px 0;border:0;border-top:2px solid #111">
+<div class="row"><div><div><b>Customer:</b> ${esc(d.name||'-')}</div><div><b>Account No:</b> ${esc(d.account||'-')}</div><div><b>Home ID:</b> ${esc(d.home||'-')}</div></div><div><div><b>Phone:</b> ${esc(d.phone||'-')}</div></div></div>
+<table><thead><tr><th>Period</th><th class="n">Prev. reading</th><th class="n">Curr. reading</th><th class="n">Units</th><th class="n">Rate</th><th class="n">Amount</th><th>Due date</th><th class="n">Late fine</th><th class="n">Total payable</th><th>Status</th></tr></thead><tbody><tr><td>${esc(l.billing_period)}</td><td class="n">${l.current_reading!=null?f1(l.previous_reading):'-'}</td><td class="n">${l.current_reading!=null?f1(l.current_reading):'-'}</td><td class="n">${f1(l.added_units)}</td><td class="n">${rs(l.rate_per_unit||S.rate)}</td><td class="n">${rs(l.bill_amount)}</td><td>${du?du.toLocaleDateString('en-GB'):'-'}</td><td class="n">${lf>0?rs(lf):'-'}</td><td class="n">${rs(l.bill_amount+(paid?0:lf))}</td><td>${esc(l.payment_status)}</td></tr></tbody></table>
+<div class="row" style="align-items:flex-end"><div><span class="stamp ${paid?'paid':'unpaid'}">${esc(l.payment_status)}</span></div>
+<div class="tot"><div><span>Bill</span><b>${rs(l.bill_amount)}</b></div>${lf>0?`<div><span>Late fine</span><b>${rs(lf)}</b></div>`:''}<div style="border-top:2px solid #111;margin-top:4px;padding-top:6px"><span>Bill + Fine = Total payable</span><b>${rs(l.bill_amount+(paid?0:lf))}</b></div></div></div>
+<p style="margin-top:18px;font-size:12px;color:#555">Due date and late-fine stages are set by the owner in Settings. This is a computer-generated bill.</p></div>`}
+async function printBillFor(id){try{const h=S.home&&S.home.property_id?S.home:await api('/properties/'+encodeURIComponent(S.cur)),l=h.logs.find(x=>x.log_id===id);if(!l)return toast('Bill not found',1);
+  if(!S.clist.length)try{S.clist=await api('/customers/')}catch{}
+  const c=S.clist.find(x=>x.home_number===h.property_id)||{};
+  $('#slip').innerHTML=singleBillHtml({name:c.full_name||h.owner_name,account:c.account_number,home:h.property_id,phone:c.phone},l);print()}catch(e){toast(e.message,1)}}
 
 /* ---------- Auth + role views ---------- */
 function loginV(){
@@ -370,7 +407,7 @@ function custV(){const c=S.cust;if(!c)return '<div class="card p-6">Loading...</
 ${pr?`<p class="text-sm"><b>Home:</b> ${esc(pr.home_number||'Not linked yet')}</p><p class="text-sm"><b>Name:</b> ${esc(c.user.full_name||'—')}</p><p class="text-sm"><b>Phone:</b> ${esc(p.phone||c.user.phone||'—')}</p><p class="text-sm"><b>Address:</b> ${esc(p.address||'—')}</p>`:''}
 <form class="mt-3 space-y-2" onsubmit="event.preventDefault();linkHome(this)"><label class="lbl">${pr&&pr.home_number?'Change linked home':'Link your home'}</label><div class="flex gap-2"><input name="home_number" required class="inp" placeholder="HOME-001" value="${esc(pr&&pr.home_number||'')}"><button class="btn btn-p">Link</button></div><p class="text-xs opacity-60">The home must already exist and not be linked to another customer.</p></form>
 <form class="mt-4 space-y-2" onsubmit="event.preventDefault();saveProfile(this)"><label class="lbl">Edit profile</label><input name="full_name" class="inp" placeholder="Full name" value="${esc(c.user.full_name||'')}"><input name="phone" class="inp" placeholder="Phone" value="${esc(p.phone||c.user.phone||'')}"><input name="address" class="inp" placeholder="Address" value="${esc(p.address||'')}"><button class="btn">Save profile</button></form></div>
-<div class="card p-2 sm:p-4"><div class="flex items-center justify-between p-2 sm:p-0 sm:mb-2"><h2 class="font-display text-lg font-bold">My bills</h2><button type="button" class="btn" onclick="printMine()">Print my bill</button></div>${L.map(l=>`<div class="flex flex-wrap items-center gap-x-4 gap-y-2 ${LN} px-2 py-3"><div class="flex-1 min-w-[9rem]"><p class="font-semibold">${esc(l.billing_period)}</p><p class="text-xs opacity-60">${(l.entry_date||'').slice(0,10)} · +${f1(l.added_units)} units</p></div><b>${rs(l.bill_amount)}</b><span class="rounded-full px-3 py-1 text-xs font-semibold ${l.payment_status==='PAID'?'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300':'bg-red-500/15 text-red-700 dark:text-red-300'}">${l.payment_status}</span></div>`).join('')||'<p class="p-3 text-sm opacity-70">No bills yet.</p>'}
+<div class="card p-2 sm:p-4"><div class="flex items-center justify-between p-2 sm:p-0 sm:mb-2"><h2 class="font-display text-lg font-bold">My bills</h2><button type="button" class="btn" onclick="printMine()">Print my bill</button></div>${L.map(l=>`<div class="flex flex-wrap items-center gap-x-4 gap-y-2 ${LN} px-2 py-3"><div class="flex-1 min-w-[9rem]"><p class="font-semibold">${esc(l.billing_period)}</p><p class="text-xs opacity-60">${(l.entry_date||'').slice(0,10)} · +${f1(l.added_units)} units · due ${l.due_date||'-'}${l.late_fine>0?` · fine ${rs(l.late_fine)}`:''}</p></div><b>${rs(l.bill_amount+(l.payment_status==='PAID'?0:(l.late_fine||0)))}</b><span class="rounded-full px-3 py-1 text-xs font-semibold ${l.payment_status==='PAID'?'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300':'bg-red-500/15 text-red-700 dark:text-red-300'}">${l.payment_status}</span></div>`).join('')||'<p class="p-3 text-sm opacity-70">No bills yet.</p>'}
 <p class="p-3 text-xs opacity-60">Payment status is set by staff when they mark a bill paid. You cannot mark your own bills paid.</p></div></div>`}
 async function linkHome(f){const d=Object.fromEntries(new FormData(f));
   await run(()=>api('/me/link-home',{method:'POST',body:{home_number:d.home_number}}),'Home linked')}

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Literal, Optional
 
 from pydantic import (
@@ -11,10 +11,11 @@ from pydantic import (
 
 
 # ---------- Property ----------
+# NOTE: Block / address_block was removed everywhere user-visible (2026-11-01).
+# The legacy column still exists in old databases and is ignored, never returned.
 class PropertyCreate(BaseModel):
     property_id: str = Field(..., min_length=1)
     owner_name: Optional[str] = "Unassigned"
-    address_block: Optional[str] = "General"
     initial_units: float = Field(default=0.0, ge=0)
     initial_meter_reading: float = Field(default=0.0, ge=0)
 
@@ -23,12 +24,10 @@ class BulkPropertyCreate(BaseModel):
     prefix: str = "HOME-"
     start_number: int = Field(default=1, ge=1)
     count: int = Field(default=100, ge=1, le=1000)
-    address_block: Optional[str] = "Block A"
 
 
 class PropertyUpdate(BaseModel):
     owner_name: Optional[str] = None
-    address_block: Optional[str] = None
 
 
 class PropertyRename(BaseModel):
@@ -86,6 +85,41 @@ class UsageLogResponse(BaseModel):
     paid_date: Optional[datetime] = None
     entry_date: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # Frozen at creation (old bills: derived fallback, see main.enrich_log).
+    rate_per_unit: Optional[float] = None
+    due_date: Optional[date] = None
+    # Live for UNPAID bills; frozen at payment time for PAID bills.
+    late_fine: float = 0.0
+
+    @computed_field
+    @property
+    def total_payable(self) -> float:
+        return round(self.bill_amount + (self.late_fine or 0.0), 2)
+
+
+# ---------- Settings ----------
+class FineStage(BaseModel):
+    days_after_due: int = Field(..., ge=0)
+    amount: float = Field(..., ge=0)
+
+
+class SettingsUpdate(BaseModel):
+    rate_per_unit: float = Field(..., gt=0)
+    due_day: int = Field(..., ge=1, le=31)
+    fine_stages: List[FineStage] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def check_stages(self):
+        days = [s.days_after_due for s in self.fine_stages]
+        if len(days) != len(set(days)):
+            raise ValueError("Fine stages ke days_after_due alag-alag hone chahiye.")
+        return self
+
+
+class SettingsResponse(BaseModel):
+    rate_per_unit: float
+    due_day: int
+    fine_stages: List[FineStage]
 
 
 # ---------- Property responses ----------
@@ -94,17 +128,23 @@ class PropertyResponse(BaseModel):
 
     property_id: str
     owner_name: Optional[str] = None
-    address_block: Optional[str] = None
     cumulative_units: float
     cumulative_billed_amount: float
     cumulative_paid_amount: float = 0.0
     last_meter_reading: float = 0.0
     last_updated: Optional[datetime] = None
+    # Sum of live fines on this home's UNPAID bills (0 unless enriched).
+    total_fine: float = 0.0
 
     @computed_field
     @property
     def pending_amount(self) -> float:
         return round(max(0.0, self.cumulative_billed_amount - self.cumulative_paid_amount), 2)
+
+    @computed_field
+    @property
+    def total_payable(self) -> float:
+        return round(self.pending_amount + (self.total_fine or 0.0), 2)
 
 
 class PropertyDetailResponse(PropertyResponse):
@@ -120,6 +160,8 @@ class DashboardSummary(BaseModel):
     total_paid: float
     total_pending: float
     unpaid_entries_count: int
+    total_fine: float = 0.0
+    total_payable: float = 0.0
 
 
 # ---------- Auth, roles, customers (added 2026-10-27) ----------

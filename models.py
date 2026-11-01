@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, String, Float, Integer, DateTime, ForeignKey
+from sqlalchemy import Boolean, Column, Date, String, Float, Integer, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 from database import Base
@@ -9,6 +9,9 @@ class Property(Base):
 
     property_id = Column(String, primary_key=True, index=True)  # e.g., HOME-001
     owner_name = Column(String, nullable=True, default="Unassigned")
+    # LEGACY ONLY: old databases still carry this column. It is never read,
+    # never written by new code, and never shown in any API response, bill,
+    # printout or export. Data is left untouched so old databases keep working.
     address_block = Column(String, nullable=True, default="General")
 
     # Cumulative totals
@@ -47,6 +50,19 @@ class UsageLog(Base):
     bill_amount = Column(Float, default=0.0, nullable=False)
     payment_status = Column(String, default="UNPAID", nullable=False, index=True)  # "PAID" ya "UNPAID"
     paid_date = Column(DateTime, nullable=True)
+
+    # Rate frozen at bill creation (Rs. per unit). Old bills created before
+    # this column existed keep a NULL here; responses fall back to the
+    # bill-implied rate (bill / units) or the current settings rate.
+    rate_per_unit = Column(Float, nullable=True)
+    # Due date for this bill, set at creation from the Settings due-day.
+    # Old bills keep a NULL here; responses fall back to the due date
+    # computed from entry_date + current Settings due-day.
+    due_date = Column(Date, nullable=True)
+    # Late fine frozen when a bill is marked PAID (so it stops increasing).
+    # For UNPAID bills the fine is computed live on every read and this
+    # stored value is ignored.
+    late_fine = Column(Float, default=0.0, nullable=False)
 
     entry_date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, nullable=True)
@@ -112,3 +128,26 @@ class Session(Base):
     expires_at = Column(DateTime, nullable=False)
 
     user = relationship("User", back_populates="sessions")
+
+
+# =====================================================================
+# App settings (added 2026-11-01): single row, id = 1.
+# - rate_per_unit: fixed Rs. per unit, stored in the DB (never browser-only).
+#   Only a super_admin may change it, from Settings. Old bills keep the
+#   rate_per_unit frozen on their UsageLog row.
+# - due_day: day of month (1-31, clamped to the month's last day) on which
+#   each month's bills fall due.
+# - fine_stages_json: JSON list of {"days_after_due": int, "amount": float}.
+#   The fine for an unpaid bill is the amount of the last stage whose
+#   days_after_due has been passed (overdue days > days_after_due).
+#   Example default: 1000 from day 1 late, 2000 after 15 days late,
+#   3000 after 30 days late. Only a super_admin may change these.
+# =====================================================================
+class AppSettings(Base):
+    __tablename__ = "app_settings"
+
+    id = Column(Integer, primary_key=True)
+    rate_per_unit = Column(Float, default=50.0, nullable=False)
+    due_day = Column(Integer, default=20, nullable=False)
+    fine_stages_json = Column(String, nullable=False, default='[{"days_after_due": 0, "amount": 1000}, {"days_after_due": 15, "amount": 2000}, {"days_after_due": 30, "amount": 3000}]')
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

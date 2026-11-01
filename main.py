@@ -1,8 +1,10 @@
+import calendar
 import csv
 import hashlib
 import io
+import json
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
@@ -22,6 +24,45 @@ import schemas
 from database import SessionLocal, engine, get_db
 
 models.Base.metadata.create_all(bind=engine)
+
+
+def _ensure_new_columns() -> None:
+    """Add columns to tables created before 2026-11-01, without touching data.
+
+    create_all() only creates missing TABLES, so a pre-existing usage_logs
+    table never gains rate_per_unit / due_date / late_fine on its own.
+    This adds them if absent (Postgres: IF NOT EXISTS; SQLite: try/except).
+    The legacy properties.address_block column is deliberately left alone.
+    """
+    from sqlalchemy import text as _text
+
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if dialect == "sqlite":
+            rows = conn.execute(_text("PRAGMA table_info(usage_logs)")).fetchall()
+            existing = {r[1] for r in rows}
+            for col, ddl in (
+                ("rate_per_unit", "ALTER TABLE usage_logs ADD COLUMN rate_per_unit FLOAT"),
+                ("due_date", "ALTER TABLE usage_logs ADD COLUMN due_date DATE"),
+                ("late_fine", "ALTER TABLE usage_logs ADD COLUMN late_fine FLOAT DEFAULT 0"),
+            ):
+                if col not in existing:
+                    conn.execute(_text(ddl))
+        else:
+            for ddl in (
+                "ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS rate_per_unit DOUBLE PRECISION",
+                "ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS due_date DATE",
+                "ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS late_fine DOUBLE PRECISION DEFAULT 0",
+            ):
+                conn.execute(_text(ddl))
+
+
+try:
+    _ensure_new_columns()
+except Exception:
+    # Never break boot on a migration hiccup; endpoints fall back to
+    # computed values when a column is still missing.
+    pass
 
 
 def _bootstrap_super_admin() -> None:
@@ -60,8 +101,8 @@ OPENING_PERIOD = "OPENING-BALANCE"
 
 app = FastAPI(
     title="Residential Utility Usage Tracker API",
-    description="Cumulative calculation, meter readings, paid/unpaid, edit/delete with chain recalculation, reporting. Version 4.2 adds roles and secure authentication.",
-    version="4.2.0",
+    description="Cumulative calculation, meter readings, paid/unpaid, edit/delete with chain recalculation, reporting. Version 4.3: no Block, fixed DB rate (Rs. 50), Settings due-day + staged late fines, due date/fine in bills and exports.",
+    version="4.3.0",
 )
 
 app.add_middleware(
@@ -155,14 +196,12 @@ def recalculate_chain(db: Session, prop: models.Property) -> None:
     prop.last_updated = now_utc()
 
 
-def unpaid_query(db: Session, block: Optional[str] = None, search: Optional[str] = None):
+def unpaid_query(db: Session, search: Optional[str] = None):
     q = (
         db.query(models.UsageLog, models.Property)
         .join(models.Property, models.Property.property_id == models.UsageLog.property_id)
         .filter(models.UsageLog.payment_status == "UNPAID")
     )
-    if block and block != "All Blocks":
-        q = q.filter(models.Property.address_block == block)
     if search and search.strip():
         like = f"%{search.strip()}%"
         q = q.filter(
@@ -177,6 +216,154 @@ def unpaid_query(db: Session, block: Optional[str] = None, search: Optional[str]
 
 def fmt_dt(value: Optional[datetime]) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S") if value else ""
+
+
+# =====================================================================
+# Settings, due dates, late fines (2026-11-01)
+# =====================================================================
+DEFAULT_SETTINGS = {
+    "rate_per_unit": 50.0,
+    "due_day": 20,
+    "fine_stages": [
+        {"days_after_due": 0, "amount": 1000.0},
+        {"days_after_due": 15, "amount": 2000.0},
+        {"days_after_due": 30, "amount": 3000.0},
+    ],
+}
+
+
+def get_settings(db: Session) -> dict:
+    """Current settings as a plain dict; defaults when no row exists yet."""
+    row = db.query(models.AppSettings).filter(models.AppSettings.id == 1).first()
+    if row is None:
+        return json.loads(json.dumps(DEFAULT_SETTINGS))
+    try:
+        stages = json.loads(row.fine_stages_json or "[]")
+    except Exception:
+        stages = []
+    return {
+        "rate_per_unit": float(row.rate_per_unit),
+        "due_day": int(row.due_day),
+        "fine_stages": [
+            {"days_after_due": int(s["days_after_due"]), "amount": float(s["amount"])}
+            for s in stages
+            if isinstance(s, dict) and "days_after_due" in s and "amount" in s
+        ],
+    }
+
+
+def due_date_for(entry_dt: Optional[datetime], due_day: int) -> Optional[date]:
+    """Next occurrence of due_day on/after the entry date's month.
+
+    Entry on/before due_day -> same month; entry after due_day -> next month.
+    due_day is clamped to the month's last day (e.g. 31 -> Feb 28/29).
+    """
+    if entry_dt is None:
+        return None
+    d = entry_dt.date() if isinstance(entry_dt, datetime) else entry_dt
+    year, month = d.year, d.month
+    if d.day > due_day:
+        month += 1
+        if month > 12:
+            month, year = 1, year + 1
+    last = calendar.monthrange(year, month)[1]
+    return date(year, month, min(due_day, last))
+
+
+def compute_late_fine(due: Optional[date], as_of: Optional[date], stages: list) -> float:
+    """Fine for one bill. 0 when not yet overdue.
+
+    Stage semantics: a stage applies once overdue_days > days_after_due,
+    so days_after_due=0 means the fine starts on the first day late.
+    The amount is the LAST applicable stage's amount (not cumulative).
+    """
+    if due is None or as_of is None:
+        return 0.0
+    overdue = (as_of - due).days
+    if overdue <= 0:
+        return 0.0
+    fine = 0.0
+    for stage in sorted(stages, key=lambda s: s["days_after_due"]):
+        if overdue > stage["days_after_due"]:
+            fine = float(stage["amount"])
+    return fine
+
+
+def _log_rate(log, settings: dict) -> float:
+    if getattr(log, "rate_per_unit", None) is not None:
+        return float(log.rate_per_unit)
+    if log.added_units:
+        return round(log.bill_amount / log.added_units, 2)
+    return float(settings["rate_per_unit"])
+
+
+def _log_due(log, settings: dict) -> Optional[date]:
+    if getattr(log, "due_date", None) is not None:
+        return log.due_date
+    return due_date_for(log.entry_date, settings["due_day"])
+
+
+def enrich_log(log, settings: dict):
+    """Fill a log's response-only fields in memory (no commit).
+
+    - rate_per_unit: frozen value, or derived fallback for pre-2026-11-01 bills.
+    - due_date: stored value, or computed fallback for old bills.
+    - late_fine: PAID bills -> frozen value stored at payment time (or, if
+      none was stored, the fine as of paid_date); UNPAID bills -> live fine
+      as of today, so it keeps increasing until the bill is paid.
+    """
+    due = _log_due(log, settings)
+    if log.payment_status == "PAID":
+        stored = getattr(log, "late_fine", None)
+        if stored:
+            fine = float(stored)
+        else:
+            as_of = log.paid_date.date() if log.paid_date else None
+            fine = compute_late_fine(due, as_of, settings["fine_stages"])
+    else:
+        fine = compute_late_fine(due, now_utc().date(), settings["fine_stages"])
+    log.rate_per_unit = _log_rate(log, settings)
+    log.due_date = due
+    log.late_fine = fine
+    return log
+
+
+def enrich_logs(logs, settings: dict):
+    return [enrich_log(log, settings) for log in logs]
+
+
+def enrich_property(prop, settings: dict):
+    """Set prop.total_fine (sum of live fines on its UNPAID bills).
+
+    total_payable on the response is pending_amount + total_fine.
+    """
+    if prop is None:
+        return prop
+    total = 0.0
+    for log in getattr(prop, "logs", []) or []:
+        enrich_log(log, settings)
+        if log.payment_status != "PAID":
+            total += float(log.late_fine or 0.0)
+    prop.total_fine = round(total, 2)
+    return prop
+
+
+def enrich_properties(props, db: Session, settings: dict):
+    if not props:
+        return props
+    ids = [p.property_id for p in props]
+    logs = (
+        db.query(models.UsageLog)
+        .filter(models.UsageLog.property_id.in_(ids), models.UsageLog.payment_status == "UNPAID")
+        .all()
+    )
+    fines: dict = {}
+    for log in logs:
+        enrich_log(log, settings)
+        fines[log.property_id] = fines.get(log.property_id, 0.0) + float(log.late_fine or 0.0)
+    for prop in props:
+        prop.total_fine = round(fines.get(prop.property_id, 0.0), 2)
+    return props
 
 
 # =====================================================================
@@ -337,6 +524,9 @@ def customer_dashboard(user: models.User = Depends(auth.require_customer), db: S
             .order_by(models.UsageLog.log_id.desc())
             .all()
         )
+        settings = get_settings(db)
+        enrich_logs(logs, settings)
+        enrich_property(prop, settings)
     return schemas.CustomerDashboardResponse(
         user=user_payload(user),
         profile=profile_payload(profile),
@@ -391,6 +581,46 @@ def link_my_home(
         "message": f"Home {prop.property_id} link ho gaya.",
         "profile": profile_payload(profile).model_dump(),
     }
+
+
+# =====================================================================
+# Settings: read by staff, changed ONLY by super_admin (the owner)
+# =====================================================================
+@app.get("/settings", response_model=schemas.SettingsResponse)
+def read_settings(user: models.User = Depends(auth.require_staff), db: Session = Depends(get_db)):
+    s = get_settings(db)
+    return schemas.SettingsResponse(
+        rate_per_unit=s["rate_per_unit"],
+        due_day=s["due_day"],
+        fine_stages=[schemas.FineStage(**st) for st in s["fine_stages"]],
+    )
+
+
+@app.put("/settings", response_model=schemas.SettingsResponse)
+def update_settings(
+    payload: schemas.SettingsUpdate,
+    admin: models.User = Depends(auth.require_admin),
+    db: Session = Depends(get_db),
+):
+    stages = sorted(
+        [{"days_after_due": s.days_after_due, "amount": s.amount} for s in payload.fine_stages],
+        key=lambda s: s["days_after_due"],
+    )
+    row = db.query(models.AppSettings).filter(models.AppSettings.id == 1).first()
+    if row is None:
+        row = models.AppSettings(id=1)
+        db.add(row)
+    row.rate_per_unit = payload.rate_per_unit
+    row.due_day = payload.due_day
+    row.fine_stages_json = json.dumps(stages)
+    row.updated_at = now_utc()
+    db.commit()
+    db.refresh(row)
+    return schemas.SettingsResponse(
+        rate_per_unit=row.rate_per_unit,
+        due_day=row.due_day,
+        fine_stages=[schemas.FineStage(**st) for st in stages],
+    )
 
 
 # =====================================================================
@@ -580,7 +810,6 @@ def create_property(prop: schemas.PropertyCreate, user: models.User = Depends(au
     new_prop = models.Property(
         property_id=prop_id,
         owner_name=prop.owner_name,
-        address_block=prop.address_block,
         cumulative_units=prop.initial_units,
         last_meter_reading=prop.initial_meter_reading,
     )
@@ -624,7 +853,6 @@ def bulk_generate_properties(payload: schemas.BulkPropertyCreate, user: models.U
             models.Property(
                 property_id=prop_id,
                 owner_name=f"Resident {i}",
-                address_block=payload.address_block,
                 cumulative_units=0.0,
             )
         )
@@ -645,8 +873,6 @@ def update_property_details(property_id: str, payload: schemas.PropertyUpdate, u
 
     if payload.owner_name is not None:
         property_record.owner_name = payload.owner_name
-    if payload.address_block is not None:
-        property_record.address_block = payload.address_block
 
     property_record.last_updated = now_utc()
     db.commit()
@@ -684,12 +910,14 @@ def rename_property_id(property_id: str, payload: schemas.PropertyRename, user: 
 
 @app.get("/properties/", response_model=List[schemas.PropertyResponse])
 def get_all_properties(skip: int = 0, limit: int = 2000, user: models.User = Depends(auth.require_staff), db: Session = Depends(get_db)):
-    return db.query(models.Property).order_by(models.Property.property_id).offset(skip).limit(limit).all()
+    props = db.query(models.Property).order_by(models.Property.property_id).offset(skip).limit(limit).all()
+    return enrich_properties(props, db, get_settings(db))
 
 
 @app.get("/properties/{property_id}", response_model=schemas.PropertyDetailResponse)
 def get_property_history(property_id: str, user: models.User = Depends(auth.require_staff), db: Session = Depends(get_db)):
-    return get_property_or_404(db, norm_id(property_id))
+    prop = get_property_or_404(db, norm_id(property_id))
+    return enrich_property(prop, get_settings(db))
 
 
 @app.post("/properties/{property_id}/pay-all")
@@ -706,9 +934,13 @@ def pay_all_for_property(property_id: str, user: models.User = Depends(auth.requ
 
     paid_time = now_utc()
     amount = 0.0
+    settings = get_settings(db)
     for log in unpaid_logs:
         log.payment_status = "PAID"
         log.paid_date = paid_time
+        # Freeze the fine at payment time so it stops increasing.
+        due = _log_due(log, settings)
+        log.late_fine = compute_late_fine(due, paid_time.date(), settings["fine_stages"])
         amount += log.bill_amount
 
     db.flush()
@@ -756,15 +988,23 @@ def add_usage_entry(entry: schemas.UsageEntryCreate, user: models.User = Depends
         new_total_units=round(previous_units + units, 4),
         previous_reading=previous_reading,
         current_reading=current_reading,
-        bill_amount=entry.bill_amount,
+        # Fixed rate from Settings (stored in the DB). The bill_amount sent
+        # by the client is deliberately ignored: bill = units x fixed rate,
+        # so the rate can never drift from the entry screen or a refresh.
+        bill_amount=round(units * get_settings(db)["rate_per_unit"], 2),
         payment_status="UNPAID",
     )
     db.add(usage_log)
     db.flush()
+    # Freeze this bill's rate and due date at creation time.
+    settings = get_settings(db)
+    usage_log.rate_per_unit = settings["rate_per_unit"]
+    usage_log.due_date = due_date_for(usage_log.entry_date, settings["due_day"])
+    usage_log.late_fine = 0.0
     recalculate_chain(db, prop)
     db.commit()
     db.refresh(usage_log)
-    return usage_log
+    return enrich_log(usage_log, settings)
 
 
 @app.put("/usage/{log_id}", response_model=schemas.UsageLogResponse)
@@ -777,8 +1017,9 @@ def update_usage_entry(log_id: int, payload: schemas.UsageEntryUpdate, user: mod
 
     if payload.billing_period is not None:
         log.billing_period = payload.billing_period.strip()
-    if payload.bill_amount is not None:
-        log.bill_amount = payload.bill_amount
+    # bill_amount from the client is ignored: a bill is always
+    # units x its own frozen rate_per_unit (old bills: frozen rate if
+    # present, otherwise the current Settings rate).
 
     if payload.current_reading is not None:
         log.current_reading = payload.current_reading
@@ -790,9 +1031,18 @@ def update_usage_entry(log_id: int, payload: schemas.UsageEntryUpdate, user: mod
     log.updated_at = now_utc()
     db.flush()
     recalculate_chain(db, prop)
+    # Chain recalculation fixes added_units for reading entries; now
+    # re-price the edited bill at its frozen rate and re-total.
+    settings = get_settings(db)
+    rate = log.rate_per_unit if log.rate_per_unit is not None else settings["rate_per_unit"]
+    log.rate_per_unit = rate
+    if payload.current_reading is not None or payload.added_units is not None:
+        log.bill_amount = round(log.added_units * rate, 2)
+    db.flush()
+    recalculate_chain(db, prop)
     db.commit()
     db.refresh(log)
-    return log
+    return enrich_log(log, settings)
 
 
 @app.delete("/usage/undo-last/{property_id}")
@@ -823,27 +1073,34 @@ def undo_last_usage_entry(property_id: str, user: models.User = Depends(auth.req
 
 @app.get("/usage/unpaid/")
 def get_unpaid_entries(
-    block: Optional[str] = None,
     search: Optional[str] = None,
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=2000),
     user: models.User = Depends(auth.require_staff),
     db: Session = Depends(get_db),
 ):
-    q = unpaid_query(db, block, search)
+    q = unpaid_query(db, search)
     total_count = q.count()
-    total_amount = q.with_entities(func.coalesce(func.sum(models.UsageLog.bill_amount), 0.0)).scalar() or 0.0
+    settings = get_settings(db)
+    all_rows = q.order_by(models.UsageLog.log_id.desc()).all()
+    total_amount = 0.0
+    for log, _prop in all_rows:
+        enrich_log(log, settings)
+        total_amount += log.bill_amount + float(log.late_fine or 0.0)
 
-    rows = q.order_by(models.UsageLog.log_id.desc()).offset(skip).limit(limit).all()
+    rows = all_rows[skip : skip + limit]
     items = [
         {
             "log_id": log.log_id,
             "property_id": prop.property_id,
             "owner_name": prop.owner_name,
-            "address_block": prop.address_block,
             "billing_period": log.billing_period,
             "added_units": log.added_units,
+            "rate_per_unit": log.rate_per_unit,
             "bill_amount": log.bill_amount,
+            "due_date": log.due_date.isoformat() if log.due_date else None,
+            "late_fine": round(float(log.late_fine or 0.0), 2),
+            "total_payable": round(log.bill_amount + float(log.late_fine or 0.0), 2),
             "entry_date": log.entry_date,
         }
         for log, prop in rows
@@ -883,19 +1140,29 @@ def update_payment_status(log_id: int, payload: schemas.PaymentUpdate, user: mod
     log = get_log_or_404(db, log_id)
     prop = get_property_or_404(db, log.property_id)
 
+    # One-click toggle, no confirmation dialog (the frontend confirms nothing).
+    settings = get_settings(db)
     log.payment_status = payload.status
-    log.paid_date = now_utc() if payload.status == "PAID" else None
+    if payload.status == "PAID":
+        log.paid_date = now_utc()
+        # Freeze the fine at payment time so it stops increasing.
+        due = _log_due(log, settings)
+        log.late_fine = compute_late_fine(due, log.paid_date.date(), settings["fine_stages"])
+    else:
+        log.paid_date = None
+        log.late_fine = 0.0
 
     db.flush()
     recalculate_chain(db, prop)
     db.commit()
     db.refresh(log)
-    return log
+    return enrich_log(log, settings)
 
 
 @app.get("/logs/", response_model=List[schemas.UsageLogResponse])
 def get_all_usage_logs(limit: int = 5000, user: models.User = Depends(auth.require_staff), db: Session = Depends(get_db)):
-    return db.query(models.UsageLog).order_by(models.UsageLog.log_id.desc()).limit(limit).all()
+    logs = db.query(models.UsageLog).order_by(models.UsageLog.log_id.desc()).limit(limit).all()
+    return enrich_logs(logs, get_settings(db))
 
 
 # =====================================================================
@@ -918,6 +1185,12 @@ def dashboard_summary(user: models.User = Depends(auth.require_staff), db: Sessi
         .scalar()
         or 0
     )
+    settings = get_settings(db)
+    unpaid_logs = db.query(models.UsageLog).filter(models.UsageLog.payment_status == "UNPAID").all()
+    total_fine = 0.0
+    for log in unpaid_logs:
+        enrich_log(log, settings)
+        total_fine += float(log.late_fine or 0.0)
 
     return schemas.DashboardSummary(
         total_homes=int(total_homes or 0),
@@ -927,6 +1200,8 @@ def dashboard_summary(user: models.User = Depends(auth.require_staff), db: Sessi
         total_paid=round(float(total_paid), 2),
         total_pending=round(max(0.0, float(total_billed) - float(total_paid)), 2),
         unpaid_entries_count=int(unpaid_count),
+        total_fine=round(total_fine, 2),
+        total_payable=round(max(0.0, float(total_billed) - float(total_paid)) + total_fine, 2),
     )
 
 
@@ -934,18 +1209,26 @@ def dashboard_summary(user: models.User = Depends(auth.require_staff), db: Sessi
 # Export (Excel / CSV) - sirf openpyxl + csv, taake Vercel bundle halka rahe
 # =====================================================================
 PROPS_HEADERS = [
-    "Home ID", "Resident Name", "Block", "Total Cumulative Units", "Last Meter Reading",
-    "Total Billed (Rs.)", "Total Paid (Rs.)", "Pending (Rs.)", "Last Updated",
+    "Home ID", "Resident Name", "Total Cumulative Units", "Last Meter Reading",
+    "Total Billed (Rs.)", "Total Paid (Rs.)", "Pending (Rs.)",
+    "Late Fine on Unpaid Bills (Rs.)", "Total Payable (Rs.)", "Last Updated",
 ]
 
 
-def props_rows(db: Session):
+def props_rows(db: Session, settings: dict):
     props = db.query(models.Property).order_by(models.Property.property_id).all()
+    enrich_properties(props, db, settings)
     return [
         [
-            p.property_id, p.owner_name, p.address_block, p.cumulative_units, p.last_meter_reading,
+            p.property_id, p.owner_name, p.cumulative_units, p.last_meter_reading,
             p.cumulative_billed_amount, p.cumulative_paid_amount,
             round(max(0.0, p.cumulative_billed_amount - p.cumulative_paid_amount), 2),
+            round(float(getattr(p, "total_fine", 0.0) or 0.0), 2),
+            round(
+                max(0.0, p.cumulative_billed_amount - p.cumulative_paid_amount)
+                + float(getattr(p, "total_fine", 0.0) or 0.0),
+                2,
+            ),
             fmt_dt(p.last_updated),
         ]
         for p in props
@@ -953,36 +1236,52 @@ def props_rows(db: Session):
 
 
 def build_export_tables(db: Session):
+    settings = get_settings(db)
     logs = db.query(models.UsageLog).order_by(models.UsageLog.log_id.desc()).all()
+    enrich_logs(logs, settings)
     logs_rows = [
         [
             l.log_id, l.property_id, l.billing_period, l.previous_reading, l.current_reading,
-            l.previous_total_units, l.added_units, l.new_total_units, l.bill_amount,
+            l.previous_total_units, l.added_units, l.new_total_units,
+            l.rate_per_unit, l.bill_amount,
+            l.due_date.isoformat() if l.due_date else "",
+            round(float(l.late_fine or 0.0), 2),
+            round(l.bill_amount + float(l.late_fine or 0.0), 2),
             l.payment_status, fmt_dt(l.paid_date), fmt_dt(l.entry_date), fmt_dt(l.updated_at),
         ]
         for l in logs
     ]
     unpaid_rows = [
         [
-            prop.property_id, prop.owner_name, prop.address_block, log.billing_period,
-            log.added_units, log.bill_amount, fmt_dt(log.entry_date),
+            prop.property_id, prop.owner_name, log.billing_period,
+            log.added_units, log.rate_per_unit, log.bill_amount,
+            log.due_date.isoformat() if log.due_date else "",
+            round(float(log.late_fine or 0.0), 2),
+            round(log.bill_amount + float(log.late_fine or 0.0), 2),
+            fmt_dt(log.entry_date),
         ]
         for log, prop in unpaid_query(db).order_by(models.Property.property_id, models.UsageLog.log_id).all()
+        for _ in [enrich_log(log, settings)]
     ]
     return [
-        ("Master_Homes_Summary", PROPS_HEADERS, props_rows(db)),
+        ("Master_Homes_Summary", PROPS_HEADERS, props_rows(db, settings)),
         (
             "All_Usage_History",
             [
                 "Entry #", "Home ID", "Billing Period", "Previous Reading", "Current Reading",
-                "Previous Total Units", "Added Units", "New Cumulative Total", "Bill Amount (Rs.)",
+                "Previous Total Units", "Added Units", "New Cumulative Total",
+                "Rate per Unit (Rs.)", "Bill Amount (Rs.)", "Due Date",
+                "Late Fine (Rs.)", "Total Payable (Rs.)",
                 "Status", "Paid Date", "Entry Date", "Edited At",
             ],
             logs_rows,
         ),
         (
             "Unpaid_Dues",
-            ["Home ID", "Resident Name", "Block", "Billing Period", "Units", "Bill Amount (Rs.)", "Entry Date"],
+            [
+                "Home ID", "Resident Name", "Billing Period", "Units", "Rate per Unit (Rs.)",
+                "Bill Amount (Rs.)", "Due Date", "Late Fine (Rs.)", "Total Payable (Rs.)", "Entry Date",
+            ],
             unpaid_rows,
         ),
     ]
@@ -1017,17 +1316,21 @@ def export_excel(user: models.User = Depends(auth.require_staff), db: Session = 
 
 @app.get("/export/csv")
 def export_csv(user: models.User = Depends(auth.require_staff), db: Session = Depends(get_db)):
+    # CSV = bill history (the table that actually has Paid/Unpaid, due date
+    # and fine per bill). No Block column anywhere.
+    tables = build_export_tables(db)
+    _title, headers, rows = tables[1]  # All_Usage_History
     text = io.StringIO()
     writer = csv.writer(text)
-    writer.writerow(PROPS_HEADERS)
-    writer.writerows(props_rows(db))
+    writer.writerow(headers)
+    writer.writerows(rows)
     data = text.getvalue().encode("utf-8-sig")  # utf-8-sig: Excel me sahi khulta hai
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
     return StreamingResponse(
         io.BytesIO(data),
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="Master_Properties_{stamp}.csv"'},
+        headers={"Content-Disposition": f'attachment; filename="Utility_Bills_{stamp}.csv"'},
     )
 
 
