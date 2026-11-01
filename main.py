@@ -102,7 +102,7 @@ OPENING_PERIOD = "OPENING-BALANCE"
 app = FastAPI(
     title="Residential Utility Usage Tracker API",
     description="Cumulative calculation, meter readings, paid/unpaid, edit/delete with chain recalculation, reporting. Version 4.3: no Block, fixed DB rate (Rs. 50), Settings due-day + staged late fines, due date/fine in bills and exports.",
-    version="4.3.0",
+    version="4.3.1",
 )
 
 app.add_middleware(
@@ -1332,6 +1332,64 @@ def export_csv(user: models.User = Depends(auth.require_staff), db: Session = De
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="Utility_Bills_{stamp}.csv"'},
     )
+
+
+from fastapi.responses import Response as _PixelResponse
+import base64 as _b64
+import re as _re
+
+_PIXEL_GIF = _b64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+_KEY_RE = _re.compile(r"^(dal|aus)-[A-Za-z0-9][A-Za-z0-9_-]{0,80}$")
+
+
+from fastapi import Request as _Request
+
+
+@app.get("/api/track/pixel.gif")
+def track_pixel(request: _Request, k: str = "", db: Session = Depends(get_db)):
+    """Public 1x1 tracking pixel. Always returns a GIF, even on DB error,
+    so a tracking failure never breaks the recipient's email rendering.
+    Only the FIRST open per key is stored; no IP, no email address."""
+    try:
+        key = (k or "").strip()[:120]
+        if _KEY_RE.match(key):
+            program = key.split("-", 1)[0]
+            existing = db.query(models.EmailOpen).filter(models.EmailOpen.key == key).first()
+            if not existing:
+                ua = ""
+                try:
+                    ua = (request.headers.get("user-agent", "") or "")[:200]
+                except Exception:
+                    ua = ""
+                db.add(models.EmailOpen(key=key, program=program, user_agent=ua))
+                db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    return _PixelResponse(
+        content=_PIXEL_GIF,
+        media_type="image/gif",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+    )
+
+
+@app.get("/api/track/summary")
+def track_summary(db: Session = Depends(get_db)):
+    """Aggregate opens only: keys contain no email addresses, so this
+    summary is safe for the daily outreach report. Daily reports must
+    ignore keys containing '-test' (live verification hits)."""
+    rows = db.query(models.EmailOpen).order_by(models.EmailOpen.first_opened_at.desc()).limit(1000).all()
+    by_program = {}
+    by_date = {}
+    items = []
+    for r in rows:
+        by_program[r.program] = by_program.get(r.program, 0) + 1
+        d = r.first_opened_at.strftime("%Y-%m-%d") if r.first_opened_at else ""
+        by_date[d] = by_date.get(d, 0) + 1
+        items.append({"key": r.key, "program": r.program, "first_opened_at": r.first_opened_at.isoformat() if r.first_opened_at else ""})
+    return {"total_distinct_opens": len(rows), "by_program": by_program, "by_date": by_date, "opens": items}
 
 
 # =====================================================================

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Email Opens — TorqueTalk Outreach Tracker</title>
+<style>body{font-family:system-ui,sans-serif;margin:0;color:#10222b;background:#f6f9f8}.wrap{max-width:900px;margin:0 auto;padding:24px}h1{font-size:26px}table{width:100%;border-collapse:collapse;background:#fff}th,td{padding:10px;border-bottom:1px solid #ddd;text-align:left;font-size:14px}.note{opacity:.7;font-size:13px}</style>
+</head>
+<body><div class="wrap">
+<h1>Email Opens — TorqueTalk Outreach</h1>
+<p class="note">Free pixel tracker. Keys contain only a program code, lead code and send date — no email addresses, no IPs. First open per email only. Apple Mail and image-blocking mean opens are a signal, not an exact count; replies remain the real metric. Keys containing "-test" are live verification hits — ignore them in daily reports.</p>
+<p><b>Total distinct opens: <span id="total">…</span></b> &nbsp; Dallas (dal): <span id="dal">…</span> &nbsp; Austin (aus): <span id="aus">…</span></p>
+<table><thead><tr><th>Key</th><th>Program</th><th>First opened</th></tr></thead><tbody id="rows"></tbody></table>
+<p class="note">Pixel URL format: https://utility-tracker-adil-02b1.vercel.app/api/track/pixel.gif?k=dal-L1102-20261102 — embed as a 1x1 image at the end of an HTML email. Plain-text emails cannot be tracked.</p>
+</div>
+<script>
+fetch('/api/track/summary').then(r=>r.json()).then(d=>{
+document.getElementById('total').textContent=d.total_distinct_opens;
+document.getElementById('dal').textContent=d.by_program.dal||0;
+document.getElementById('aus').textContent=d.by_program.aus||0;
+document.getElementById('rows').innerHTML=d.opens.map(o=>'<tr><td>'+o.key+'</td><td>'+o.program+'</td><td>'+o.first_opened_at+'</td></tr>').join('');
+}).catch(()=>{document.getElementById('total').textContent='could not load';});
+</script>
+</body>
+</html>

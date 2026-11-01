@@ -151,3 +151,21 @@ class AppSettings(Base):
     due_day = Column(Integer, default=20, nullable=False)
     fine_stages_json = Column(String, nullable=False, default='[{"days_after_due": 0, "amount": 1000}, {"days_after_due": 15, "amount": 2000}, {"days_after_due": 30, "amount": 3000}]')
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+# =====================================================================
+# Email open tracking (TorqueTalk outreach, added 2026-11-01, free tier).
+# Privacy by design: the pixel key (k) contains ONLY a program prefix,
+# a lead code and a send date — NEVER an email address, name or IP.
+# Example: dal-L1102-20261102, aus-avenue-dental-north-austin-20261102.
+# First open per key only (repeat loads are ignored), no IP is stored.
+# This table is separate from billing data and is never shown to
+# utility-tracker customers; it feeds the outreach daily opens report.
+# =====================================================================
+class EmailOpen(Base):
+    __tablename__ = "email_opens"
+
+    key = Column(String, primary_key=True, index=True)
+    program = Column(String, nullable=False, default="")  # dal | aus
+    first_opened_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    user_agent = Column(String, nullable=True, default="")
