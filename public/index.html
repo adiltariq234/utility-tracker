@@ -36,6 +36,15 @@
 .bill .stamp{display:inline-block;border:3px solid;padding:2px 14px;font-weight:800;font-size:18px;transform:rotate(-4deg);letter-spacing:2px}
 .bill .paid{color:#047857}.bill .unpaid{color:#b91c1c}
 .bill table.detail td:first-child{width:42%;font-weight:600;background:#f1f5f4}
+/* Native dropdown popups: without color-scheme the browser renders them
+   light even in dark mode, while option text inherits the light dark-mode
+   colour — options become unreadable (only the highlighted one shows).
+   Declaring the scheme per theme + explicit option colours fixes every
+   <select> in the app (Print Bill mode, Bulk print, Users role). */
+:root{color-scheme:light}
+.dark{color-scheme:dark}
+select.inp option{color:#10222b;background:#fff}
+.dark select.inp option{color:#e2e8f0;background:#1e293b}
 @page{size:A4;margin:12mm}
 @media print{#slip{padding:0!important}#slip .bill{border:0;max-width:none;padding:0;break-after:page}#slip .bill:last-child{break-after:auto}.bill table th,.bill td{font-size:12px;padding:5px 6px}}
 </style>
