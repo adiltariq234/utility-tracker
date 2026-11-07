@@ -46,6 +46,11 @@ class UsageLog(Base):
 
     previous_reading = Column(Float, nullable=True)
     current_reading = Column(Float, nullable=True)
+    # True when the previous reading was typed in by hand on the bill form
+    # (v4.4). The chain recalculation then keeps that value instead of
+    # re-deriving it from the earlier bill. False = auto-derived from the
+    # previous bill's current reading (the pre-v4.4 behaviour for old bills).
+    previous_reading_manual = Column(Boolean, default=False, nullable=False)
 
     bill_amount = Column(Float, default=0.0, nullable=False)
     payment_status = Column(String, default="UNPAID", nullable=False, index=True)  # "PAID" ya "UNPAID"

@@ -35,7 +35,9 @@
 .bill .tot div{display:flex;justify-content:space-between;padding:3px 0}
 .bill .stamp{display:inline-block;border:3px solid;padding:2px 14px;font-weight:800;font-size:18px;transform:rotate(-4deg);letter-spacing:2px}
 .bill .paid{color:#047857}.bill .unpaid{color:#b91c1c}
-@media print{#slip{padding:0!important}#slip .bill{border:0;max-width:none;padding:0;break-after:page}#slip .bill:last-child{break-after:auto}}
+.bill table.detail td:first-child{width:42%;font-weight:600;background:#f1f5f4}
+@page{size:A4;margin:12mm}
+@media print{#slip{padding:0!important}#slip .bill{border:0;max-width:none;padding:0;break-after:page}#slip .bill:last-child{break-after:auto}.bill table th,.bill td{font-size:12px;padding:5px 6px}}
 </style>
 </head>
 <body class="font-sans bg-[#eef3f2] text-ink dark:bg-[#0b1519] dark:text-slate-100">
@@ -197,31 +199,32 @@ function homeV(){const h=S.home,L=[...h.logs].sort((a,b)=>b.log_id-a.log_id),pen
 <div class="flex items-center justify-between mb-3"><h2 class="font-display text-lg font-bold">New reading</h2><label class="text-xs flex items-center gap-2 min-h-[44px]"><input type="checkbox" ${S.manual?'checked':''} onchange="S.manual=this.checked;S.touched=false;render(false)"> Enter units manually</label></div>
 <div class="grid sm:grid-cols-3 lg:grid-cols-4 gap-3">
 <div><label class="lbl">Billing period</label><input id="per" class="inp" value="${per}"></div>
-${S.manual?`<div><label class="lbl">Units used</label><input id="mu" type="number" step="any" min="0" class="inp" oninput="calc()"></div>`:`<div><label class="lbl">Previous reading</label><div class="inp flex items-center opacity-70">${f1(h.last_meter_reading)}</div></div><div><label class="lbl">Current reading</label><input id="cr" type="number" step="any" min="0" class="inp" oninput="calc()"></div>`}
+${S.manual?`<div><label class="lbl">Units used</label><input id="mu" type="number" step="any" min="0" class="inp" oninput="calc()"></div>`:`<div><label class="lbl">Previous reading</label><input id="pr" type="number" step="any" min="0" class="inp" value="${h.last_meter_reading}" oninput="calc()"></div><div><label class="lbl">Current reading</label><input id="cr" type="number" step="any" min="0" class="inp" oninput="calc()"></div>`}
 <div><label class="lbl">Bill (Rs.) — auto, fixed rate ${rs(S.rate)}/unit</label><input id="bill" type="number" step="any" min="0" class="inp opacity-70" readonly></div></div>
+${S.manual?'':'<p class="text-xs opacity-60 mt-2">Previous reading is prefilled from the last bill — change it if the meter was replaced or the last reading was wrong. Units = Current − Previous.</p>'}
 <div class="flex items-center justify-between gap-3 mt-3"><p id="up" class="text-sm font-semibold"></p><button class="btn btn-p">Save reading</button></div></form>
 <div class="card p-2 sm:p-4"><h2 class="font-display text-lg font-bold p-2 sm:p-0 sm:mb-2">History</h2>${L.map(row).join('')||'<p class="p-3 text-sm opacity-70">No readings yet. Save the first one above.</p>'}</div>`}
 function row(l){const op=l.billing_period==='OPENING-BALANCE',paid=l.payment_status==='PAID';
   return `<div class="flex flex-wrap items-center gap-x-4 gap-y-2 ${LN} px-2 py-3"><div class="w-28"><p class="font-semibold">${op?'Opening balance':esc(l.billing_period)}</p><p class="text-xs opacity-60">${(l.entry_date||'').slice(0,10)}</p></div>
 <div class="text-sm flex-1 min-w-[9rem]">${op?`Meter ${f1(l.current_reading)}`:l.current_reading!=null?`${f1(l.previous_reading)} to ${f1(l.current_reading)}`:'Manual units'}<br><b>+${f1(l.added_units)} units</b> <span class="opacity-60">(total ${f1(l.new_total_units)})</span></div>
-${op?'':`<b class="w-28 sm:text-right">${rs(l.bill_amount)}${l.late_fine>0?`<br><span class="text-xs font-normal ${RED}">+ fine ${rs(l.late_fine)}</span>`:''}<br><span class="text-xs font-normal opacity-60">Due ${l.due_date||'-'} · ${rs(l.rate_per_unit||S.rate)}/unit</span></b><button type="button" onclick="pay(${l.log_id},'${paid?'UNPAID':'PAID'}')" class="rounded-full px-3 min-h-[36px] text-xs font-semibold ${paid?'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300':'bg-red-500/15 text-red-700 dark:text-red-300'}">${paid?'Paid':'Unpaid'}</button><div class="flex gap-1">${B('!min-h-[36px] !px-3','Print',`printBillFor(${l.log_id})`)}${paid?B('!min-h-[36px] !px-3','Receipt',`printReceipt(${l.log_id})`):''}${B('!min-h-[36px] !px-3','Edit',`editLog(${l.log_id})`)}${B('btn-d !min-h-[36px] !px-3','Delete',`delLog(${l.log_id})`)}</div>`}</div>`}
-function calc(){const c=$('#cr'),m=$('#mu');if(!S.home||(!c&&!m))return;
-  const raw=(c||m).value,v=+raw||0,u=c?v-S.home.last_meter_reading:v;S.units=u;const e=$('#up');
-  e.textContent=!raw?'':u>0?`${f1(u)} units${S.rate?', about '+rs(u*S.rate):''}`:'Current reading must be above '+f1(S.home.last_meter_reading);
+${op?'':`<b class="w-28 sm:text-right">${rs(l.bill_amount)}${l.late_fine>0?`<br><span class="text-xs font-normal ${RED}">+ fine ${rs(l.late_fine)}</span>`:''}<br><span class="text-xs font-normal opacity-60">Due ${l.due_date||'-'} · ${rs(l.rate_per_unit||S.rate)}/unit</span></b><span class="rounded-full px-3 py-1 text-xs font-extrabold ${paid?'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300':'bg-red-500/15 text-red-700 dark:text-red-300'}">${paid?'PAID':'UNPAID'}</span><select class="inp !w-auto !min-h-[36px] !px-2 text-xs font-semibold" aria-label="Payment status for ${esc(l.billing_period)}" onchange="pay(${l.log_id},this.value)"><option value="PAID" ${paid?'selected':''}>Paid</option><option value="UNPAID" ${!paid?'selected':''}>Unpaid</option></select><div class="flex gap-1">${B('!min-h-[36px] !px-3','Print',`printBillFor(${l.log_id})`)}${paid?B('!min-h-[36px] !px-3','Receipt',`printReceipt(${l.log_id})`):''}${B('!min-h-[36px] !px-3','Edit',`editLog(${l.log_id})`)}${B('btn-d !min-h-[36px] !px-3','Delete',`delLog(${l.log_id})`)}</div>`}</div>`}
+function calc(){const c=$('#cr'),m=$('#mu'),p=$('#pr');if(!S.home||(!c&&!m))return;
+  const raw=(c||m).value,v=+raw||0,pr=p?(+p.value||S.home.last_meter_reading):S.home.last_meter_reading,u=c?v-pr:v;S.units=u;const e=$('#up');
+  e.textContent=!raw?'':u>0?`${f1(u)} units${S.rate?', about '+rs(u*S.rate):''}`:'Current reading must be above '+f1(pr);
   e.className='text-sm font-semibold '+(u>0?'text-tide':RED);
   if(!S.touched)$('#bill').value=u>0&&S.rate?+(u*S.rate).toFixed(2):''}
 function save(){const h=S.home,p=$('#per').value.trim();calc();
   if(!p)return toast('Enter the billing period',1);
-  if(!(S.units>0))return toast(S.manual?'Enter the units used':'Current reading must be above '+f1(h.last_meter_reading),1);
+  if(!(S.units>0))return toast(S.manual?'Enter the units used':'Current reading must be above '+f1(+($('#pr')?.value||h.last_meter_reading)),1);
   const body={property_id:h.property_id,billing_period:p,bill_amount:+$('#bill').value||0};
-  if(S.manual)body.added_units=S.units;else body.current_reading=+$('#cr').value;
+  if(S.manual)body.added_units=S.units;else{body.current_reading=+$('#cr').value;const pv=$('#pr').value;if(pv!==''&&pv!=null)body.previous_reading=+pv}
   if(h.logs.some(l=>l.billing_period===p)&&!confirm(p+' already has an entry. Add another?'))return;
   run(()=>api('/usage/add/',{method:'POST',body}),'Saved '+p)}
 const pay=async(id,s,pid)=>{const ok=await run(()=>api(`/usage/${id}/payment`,{method:'PATCH',body:{status:s}}),s==='PAID'?'Marked paid':'Marked unpaid');if(ok&&s==='PAID'&&confirm('Print receipt?'))printReceipt(id,pid)};
 const payAll=()=>run(()=>api(`/properties/${encodeURIComponent(S.cur)}/pay-all`,{method:'POST'}),'All bills marked paid');
 function editLog(id){const l=S.home.logs.find(x=>x.log_id===id),r=l.current_reading!=null;
-  modal('Edit entry',`<div><label class="lbl">Billing period</label><input name="p" class="inp" required value="${esc(l.billing_period)}"></div><div><label class="lbl">${r?'Current reading':'Units used'}</label><input name="v" type="number" step="any" min="0" required class="inp" value="${r?l.current_reading:l.added_units}"></div><p class="text-xs opacity-70">Bill auto-prices at this bill's frozen rate (${rs(l.rate_per_unit||S.rate)}/unit) — the bill amount is not typed here.</p>${r?`<p class="text-xs opacity-70">Previous reading is ${f1(l.previous_reading)}. Later entries are recalculated.</p>`:''}`,
-  f=>{const d=Object.fromEntries(new FormData(f)),body={billing_period:d.p};body[r?'current_reading':'added_units']=+d.v;
+  modal('Edit entry',`<div><label class="lbl">Billing period</label><input name="p" class="inp" required value="${esc(l.billing_period)}"></div>${r?`<div><label class="lbl">Previous reading</label><input name="pr" type="number" step="any" min="0" class="inp" value="${l.previous_reading??''}"></div>`:''}<div><label class="lbl">${r?'Current reading':'Units used'}</label><input name="v" type="number" step="any" min="0" required class="inp" value="${r?l.current_reading:l.added_units}"></div><p class="text-xs opacity-70">Bill auto-prices at this bill's frozen rate (${rs(l.rate_per_unit||S.rate)}/unit) — the bill amount is not typed here.</p>${r?`<p class="text-xs opacity-70">Previous reading was ${l.previous_reading_manual?'typed in by hand':'taken from the previous bill'}. Change it only to correct a wrong reading — units and later entries are recalculated.</p>`:''}`,
+  f=>{const d=Object.fromEntries(new FormData(f)),body={billing_period:d.p};if(r&&d.pr!==''&&d.pr!=null)body.previous_reading=+d.pr;body[r?'current_reading':'added_units']=+d.v;
     return run(()=>api('/usage/'+id,{method:'PUT',body}),'Entry updated')})}
 const delLog=id=>modal('Delete this entry?','<p class="text-sm">Totals and later readings are recalculated after the delete.</p>',()=>run(()=>api('/usage/'+id,{method:'DELETE'}),'Entry deleted'),'Delete');
 function editHome(){const h=S.home;
@@ -255,17 +258,22 @@ function slip(){const h=S.home,l=[...h.logs].filter(x=>x.billing_period!=='OPENI
 const dtp=x=>{const e=String(x||'');return new Date(/Z|[+-]\d\d:?\d\d$/.test(e)?e:e+'Z')};
 const dueOf=l=>{if(l.due_date)return new Date(l.due_date+'T00:00:00');const d=dtp(l.entry_date);return isNaN(d)?null:d};
 const lateFee=l=>{if(l.payment_status==='PAID')return 0;return +(l.late_fine||0)};
+/* Bill number: BILL-<HOME>-<entry number>, stable per bill. */
+const billNo=(home,l)=>'BILL-'+String(home||'').replace(/\W/g,'')+'-'+String(l.log_id).padStart(4,'0');
+/* Previous outstanding: earlier unpaid bills of the same home (bill + live fine). */
+const prevOut=(all,l)=>all.filter(x=>x.log_id<l.log_id&&x.payment_status!=='PAID'&&x.billing_period!=='OPENING-BALANCE').reduce((a,x)=>a+(+x.bill_amount||0)+lateFee(x),0);
+const billDate=l=>{if(!l.entry_date)return '-';const d=new Date(l.entry_date);return isNaN(d)?String(l.entry_date).slice(0,10):d.toLocaleDateString('en-GB')};
 function billHtml(d,mode){
   const all=[...d.logs].filter(x=>x.billing_period!=='OPENING-BALANCE').sort((a,b)=>a.log_id-b.log_id);
   let L=all;
   if(mode==='latest')L=all.slice(-1);else if(mode==='unpaid')L=all.filter(x=>x.payment_status!=='PAID');
   const pend=Math.max(0,d.billed-d.paid),late=all.reduce((a,l)=>a+lateFee(l),0),st=pend>0?'UNPAID':'PAID',now=new Date();
-  const bn='BILL-'+String(d.account||d.home).replace(/\W/g,'')+'-'+now.toISOString().slice(0,10).replace(/-/g,'');
-  const rows=L.map(l=>{const du=dueOf(l),lf=lateFee(l);return `<tr><td>${esc(l.billing_period)}</td><td class="n">${l.current_reading!=null?f1(l.previous_reading):'-'}</td><td class="n">${l.current_reading!=null?f1(l.current_reading):'-'}</td><td class="n">${f1(l.added_units)}</td><td class="n">${rs(l.rate_per_unit||S.rate)}</td><td class="n">${rs(l.bill_amount)}</td><td>${du?du.toLocaleDateString('en-GB'):'-'}</td><td class="n">${lf>0?rs(lf):'-'}</td><td class="n">${rs(l.bill_amount+lf)}</td><td>${esc(l.payment_status)}</td></tr>`}).join('')||'<tr><td colspan="10">No bills to show.</td></tr>';
+  const bn=L.length===1?billNo(d.home,L[0]):'—';
+  const rows=L.map(l=>{const du=dueOf(l),lf=lateFee(l),po=prevOut(all,l);return `<tr><td>${esc(l.billing_period)}<br><span style="font-size:11px;color:#555">${esc(billNo(d.home,l))} · ${billDate(l)}</span></td><td class="n">${l.current_reading!=null?f1(l.previous_reading):'-'}</td><td class="n">${l.current_reading!=null?f1(l.current_reading):'-'}</td><td class="n">${f1(l.added_units)}</td><td class="n">${rs(l.rate_per_unit||S.rate)}</td><td class="n">${rs(l.bill_amount)}</td><td class="n">${po>0?rs(po):'-'}</td><td>${du?du.toLocaleDateString('en-GB'):'-'}</td><td class="n">${lf>0?rs(lf):'-'}</td><td class="n">${rs(l.bill_amount+lf)}</td><td>${esc(l.payment_status)}</td></tr>`}).join('')||'<tr><td colspan="11">No bills to show.</td></tr>';
   return `<div class="bill"><div class="row"><div><h2>UTILITY BILL</h2><div>Residential Utility Usage Tracker</div></div><div style="text-align:right"><div><b>Bill No:</b> ${esc(bn)}</div><div><b>Date:</b> ${now.toLocaleDateString('en-GB')}</div></div></div>
 <hr style="margin:14px 0;border:0;border-top:2px solid #111">
 <div class="row"><div><div><b>Customer:</b> ${esc(d.name||'-')}</div><div><b>Account No:</b> ${esc(d.account||'-')}</div><div><b>Home ID:</b> ${esc(d.home||'-')}</div></div><div><div><b>Phone:</b> ${esc(d.phone||'-')}</div><div><b>Email:</b> ${esc(d.email||'-')}</div></div></div>
-<table><thead><tr><th>Period</th><th class="n">Prev. reading</th><th class="n">Curr. reading</th><th class="n">Units</th><th class="n">Rate</th><th class="n">Amount</th><th>Due date</th><th class="n">Late fee</th><th class="n">Total payable</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
+<table><thead><tr><th>Period</th><th class="n">Prev. reading</th><th class="n">Curr. reading</th><th class="n">Units</th><th class="n">Rate</th><th class="n">Amount</th><th class="n">Prev. outstanding</th><th>Due date</th><th class="n">Late fee</th><th class="n">Total payable</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="row" style="align-items:flex-end"><div><span class="stamp ${st==='PAID'?'paid':'unpaid'}">${st}</span></div>
 <div class="tot"><div><span>Total billed</span><b>${rs(d.billed)}</b></div><div><span>Total paid</span><b>${rs(d.paid)}</b></div><div><span>Pending dues</span><b>${rs(pend)}</b></div>${late>0?`<div><span>Late fee</span><b>${rs(late)}</b></div>`:''}<div style="border-top:2px solid #111;margin-top:4px;padding-top:6px"><span>Bill + Fine = Total payable</span><b>${rs(pend+late)}</b></div></div></div>
 <p style="margin-top:18px;font-size:12px;color:#555">Due date and late-fine stages are set by the owner in Settings. A fine applies only to unpaid bills after their due date and stops increasing once a bill is marked paid. This is a computer-generated bill.</p></div>`}
@@ -337,18 +345,37 @@ async function saveSettings(f){const d=Object.fromEntries(new FormData(f));
   const stages=[...f.querySelectorAll('[data-stage]')].map(r=>({days_after_due:+r.querySelector('[name=days]').value||0,amount:+r.querySelector('[name=amt]').value||0}));
   await run(async()=>{S.settings=await api('/settings',{method:'PUT',body:{rate_per_unit:+d.rate,due_day:+d.due, fine_stages:stages}});S.rate=S.settings.rate_per_unit},'Settings saved')}
 /* ---------- Single-bill print ---------- */
-function singleBillHtml(d,l){const du=dueOf(l),lf=+(l.late_fine||0),paid=l.payment_status==='PAID';
-  return `<div class="bill"><div class="row"><div><h2>UTILITY BILL</h2><div>Residential Utility Usage Tracker</div></div><div style="text-align:right"><div><b>Bill No:</b> BILL-${esc(d.home)}-${esc(l.billing_period)}</div><div><b>Date:</b> ${new Date().toLocaleDateString('en-GB')}</div></div></div>
+function singleBillHtml(d,l,logs){const du=dueOf(l),lf=+(l.late_fine||0),paid=l.payment_status==='PAID';
+  const all=(logs||[]).filter(x=>x.billing_period!=='OPENING-BALANCE').sort((a,b)=>a.log_id-b.log_id);
+  const po=prevOut(all,l),reading=l.current_reading!=null,total=po+l.bill_amount+(paid?0:lf);
+  const kv=(k,v)=>`<tr><td>${k}</td><td>${v}</td></tr>`;
+  return `<div class="bill"><div class="row"><div><h2>UTILITY BILL</h2><div>Residential Utility Usage Tracker</div></div><div style="text-align:right"><div><b>Bill No:</b> ${esc(billNo(d.home,l))}</div><div><b>Billing Date:</b> ${billDate(l)}</div></div></div>
 <hr style="margin:14px 0;border:0;border-top:2px solid #111">
-<div class="row"><div><div><b>Customer:</b> ${esc(d.name||'-')}</div><div><b>Account No:</b> ${esc(d.account||'-')}</div><div><b>Home ID:</b> ${esc(d.home||'-')}</div></div><div><div><b>Phone:</b> ${esc(d.phone||'-')}</div></div></div>
-<table><thead><tr><th>Period</th><th class="n">Prev. reading</th><th class="n">Curr. reading</th><th class="n">Units</th><th class="n">Rate</th><th class="n">Amount</th><th>Due date</th><th class="n">Late fine</th><th class="n">Total payable</th><th>Status</th></tr></thead><tbody><tr><td>${esc(l.billing_period)}</td><td class="n">${l.current_reading!=null?f1(l.previous_reading):'-'}</td><td class="n">${l.current_reading!=null?f1(l.current_reading):'-'}</td><td class="n">${f1(l.added_units)}</td><td class="n">${rs(l.rate_per_unit||S.rate)}</td><td class="n">${rs(l.bill_amount)}</td><td>${du?du.toLocaleDateString('en-GB'):'-'}</td><td class="n">${lf>0?rs(lf):'-'}</td><td class="n">${rs(l.bill_amount+(paid?0:lf))}</td><td>${esc(l.payment_status)}</td></tr></tbody></table>
-<div class="row" style="align-items:flex-end"><div><span class="stamp ${paid?'paid':'unpaid'}">${esc(l.payment_status)}</span></div>
-<div class="tot"><div><span>Bill</span><b>${rs(l.bill_amount)}</b></div>${lf>0?`<div><span>Late fine</span><b>${rs(lf)}</b></div>`:''}<div style="border-top:2px solid #111;margin-top:4px;padding-top:6px"><span>Bill + Fine = Total payable</span><b>${rs(l.bill_amount+(paid?0:lf))}</b></div></div></div>
-<p style="margin-top:18px;font-size:12px;color:#555">Due date and late-fine stages are set by the owner in Settings. This is a computer-generated bill.</p></div>`}
+<div class="row"><div><div><b>Customer:</b> ${esc(d.name||'-')}</div><div><b>Account No:</b> ${esc(d.account||'-')}</div><div><b>Home ID:</b> ${esc(d.home||'-')}</div></div><div><div><b>Phone:</b> ${esc(d.phone||'-')}</div><div><b>Period:</b> ${esc(l.billing_period)}</div></div></div>
+<table class="detail"><tbody>
+${kv('Customer Name',esc(d.name||'-'))}
+${kv('Customer ID / Reference No.',esc(d.account||d.home||'-'))}
+${kv('Bill Number',esc(billNo(d.home,l)))}
+${kv('Billing Date',billDate(l))}
+${kv('Billing Period',esc(l.billing_period))}
+${kv('Previous Reading',reading?f1(l.previous_reading):'— (manual units)')}
+${kv('Current Reading',reading?f1(l.current_reading):'— (manual units)')}
+${kv('Total Units Consumed',f1(l.added_units)+' units')}
+${kv('Per Unit Rate',rs(l.rate_per_unit||S.rate))}
+${kv('Previous Outstanding Balance',rs(po))}
+${kv('Current Bill Amount',rs(l.bill_amount))}
+${kv('Late Fine',lf>0?rs(lf):'—')}
+${kv('<b>Total Payable Amount</b>','<b>'+rs(total)+'</b>')}
+${kv('Payment Status','<b>'+esc(l.payment_status)+'</b>')}
+${kv('Due Date',du?du.toLocaleDateString('en-GB'):'-')}
+</tbody></table>
+<div class="row" style="align-items:flex-end;margin-top:6px"><div><span class="stamp ${paid?'paid':'unpaid'}">${esc(l.payment_status)}</span></div>
+<div class="tot"><div><span>Previous outstanding</span><b>${rs(po)}</b></div><div><span>Current bill</span><b>${rs(l.bill_amount)}</b></div>${lf>0?`<div><span>Late fine</span><b>${rs(lf)}</b></div>`:''}<div style="border-top:2px solid #111;margin-top:4px;padding-top:6px"><span>Bill + Fine = Total payable</span><b>${rs(total)}</b></div></div></div>
+<p style="margin-top:18px;font-size:12px;color:#555">Due date and late-fine stages are set by the owner in Settings. Previous outstanding is the total of this home's earlier unpaid bills. This is a computer-generated bill.</p></div>`}
 async function printBillFor(id){try{const h=S.home&&S.home.property_id?S.home:await api('/properties/'+encodeURIComponent(S.cur)),l=h.logs.find(x=>x.log_id===id);if(!l)return toast('Bill not found',1);
   if(!S.clist.length)try{S.clist=await api('/customers/')}catch{}
   const c=S.clist.find(x=>x.home_number===h.property_id)||{};
-  $('#slip').innerHTML=singleBillHtml({name:c.full_name||h.owner_name,account:c.account_number,home:h.property_id,phone:c.phone},l);print()}catch(e){toast(e.message,1)}}
+  $('#slip').innerHTML=singleBillHtml({name:c.full_name||h.owner_name,account:c.account_number,home:h.property_id,phone:c.phone},l,h.logs);print()}catch(e){toast(e.message,1)}}
 
 /* ---------- Auth + role views ---------- */
 function loginV(){
@@ -397,7 +424,7 @@ async function doPw(f){const d=Object.fromEntries(new FormData(f));
     const me=await api('/auth/me');S.me=me.user;buildNav();
     if(S.me.role==='customer')await go('cust');else{await load();S.view='ov';render()}}
   catch(e){toast(e.message,1)}}
-const badge=s=>s==='PAID'?'<span class="rounded-full px-3 py-1 text-xs font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">PAID</span>':s==='UNPAID'?'<span class="rounded-full px-3 py-1 text-xs font-semibold bg-red-500/15 text-red-700 dark:text-red-300">UNPAID</span>':'<span class="rounded-full px-3 py-1 text-xs font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300">NO HOME LINKED</span>';
+const badge=s=>s==='PAID'?'<span class="rounded-full px-3 py-1 text-xs font-extrabold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">PAID</span>':s==='UNPAID'?'<span class="rounded-full px-3 py-1 text-xs font-extrabold bg-red-500/15 text-red-700 dark:text-red-300">UNPAID</span>':'<span class="rounded-full px-3 py-1 text-xs font-extrabold bg-amber-500/15 text-amber-700 dark:text-amber-300">NO HOME LINKED</span>';
 function custV(){const c=S.cust;if(!c)return '<div class="card p-6">Loading...</div>';
   const p=c.profile,pr=c.property,L=[...c.logs].sort((a,b)=>b.log_id-a.log_id);
   return `<h1 class="font-display text-3xl font-extrabold mb-1">My dashboard</h1><p class="opacity-70 mb-5">${esc(c.user.full_name||c.user.email)} · Account ${esc(p.account_number)}</p>
@@ -407,7 +434,7 @@ function custV(){const c=S.cust;if(!c)return '<div class="card p-6">Loading...</
 ${pr?`<p class="text-sm"><b>Home:</b> ${esc(pr.home_number||'Not linked yet')}</p><p class="text-sm"><b>Name:</b> ${esc(c.user.full_name||'—')}</p><p class="text-sm"><b>Phone:</b> ${esc(p.phone||c.user.phone||'—')}</p><p class="text-sm"><b>Address:</b> ${esc(p.address||'—')}</p>`:''}
 <form class="mt-3 space-y-2" onsubmit="event.preventDefault();linkHome(this)"><label class="lbl">${pr&&pr.home_number?'Change linked home':'Link your home'}</label><div class="flex gap-2"><input name="home_number" required class="inp" placeholder="HOME-001" value="${esc(pr&&pr.home_number||'')}"><button class="btn btn-p">Link</button></div><p class="text-xs opacity-60">The home must already exist and not be linked to another customer.</p></form>
 <form class="mt-4 space-y-2" onsubmit="event.preventDefault();saveProfile(this)"><label class="lbl">Edit profile</label><input name="full_name" class="inp" placeholder="Full name" value="${esc(c.user.full_name||'')}"><input name="phone" class="inp" placeholder="Phone" value="${esc(p.phone||c.user.phone||'')}"><input name="address" class="inp" placeholder="Address" value="${esc(p.address||'')}"><button class="btn">Save profile</button></form></div>
-<div class="card p-2 sm:p-4"><div class="flex items-center justify-between p-2 sm:p-0 sm:mb-2"><h2 class="font-display text-lg font-bold">My bills</h2><button type="button" class="btn" onclick="printMine()">Print my bill</button></div>${L.map(l=>`<div class="flex flex-wrap items-center gap-x-4 gap-y-2 ${LN} px-2 py-3"><div class="flex-1 min-w-[9rem]"><p class="font-semibold">${esc(l.billing_period)}</p><p class="text-xs opacity-60">${(l.entry_date||'').slice(0,10)} · +${f1(l.added_units)} units · due ${l.due_date||'-'}${l.late_fine>0?` · fine ${rs(l.late_fine)}`:''}</p></div><b>${rs(l.bill_amount+(l.payment_status==='PAID'?0:(l.late_fine||0)))}</b><span class="rounded-full px-3 py-1 text-xs font-semibold ${l.payment_status==='PAID'?'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300':'bg-red-500/15 text-red-700 dark:text-red-300'}">${l.payment_status}</span></div>`).join('')||'<p class="p-3 text-sm opacity-70">No bills yet.</p>'}
+<div class="card p-2 sm:p-4"><div class="flex items-center justify-between p-2 sm:p-0 sm:mb-2"><h2 class="font-display text-lg font-bold">My bills</h2><button type="button" class="btn" onclick="printMine()">Print my bill</button></div>${L.map(l=>`<div class="flex flex-wrap items-center gap-x-4 gap-y-2 ${LN} px-2 py-3"><div class="flex-1 min-w-[9rem]"><p class="font-semibold">${esc(l.billing_period)}</p><p class="text-xs opacity-60">${(l.entry_date||'').slice(0,10)} · +${f1(l.added_units)} units · due ${l.due_date||'-'}${l.late_fine>0?` · fine ${rs(l.late_fine)}`:''}</p></div><b>${rs(l.bill_amount+(l.payment_status==='PAID'?0:(l.late_fine||0)))}</b><span class="rounded-full px-3 py-1 text-xs font-extrabold ${l.payment_status==='PAID'?'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300':'bg-red-500/15 text-red-700 dark:text-red-300'}">${l.payment_status}</span></div>`).join('')||'<p class="p-3 text-sm opacity-70">No bills yet.</p>'}
 <p class="p-3 text-xs opacity-60">Payment status is set by staff when they mark a bill paid. You cannot mark your own bills paid.</p></div></div>`}
 async function linkHome(f){const d=Object.fromEntries(new FormData(f));
   await run(()=>api('/me/link-home',{method:'POST',body:{home_number:d.home_number}}),'Home linked')}

@@ -38,6 +38,10 @@ class PropertyRename(BaseModel):
 class UsageEntryCreate(BaseModel):
     property_id: str = Field(..., min_length=1)
     billing_period: str = Field(..., min_length=1)
+    # Manually typed previous meter reading (v4.4). When given, units are
+    # current_reading - previous_reading. When omitted, the home's last
+    # meter reading (previous bill's current reading) is used, as before.
+    previous_reading: Optional[float] = Field(default=None, ge=0)
     current_reading: Optional[float] = Field(default=None, ge=0)
     added_units: Optional[float] = Field(default=None, gt=0)
     bill_amount: float = Field(default=0.0, ge=0)
@@ -46,11 +50,20 @@ class UsageEntryCreate(BaseModel):
     def check_reading_or_units(self):
         if self.current_reading is None and self.added_units is None:
             raise ValueError("Current meter reading ya added units mein se koi ek dena zaroori hai.")
+        if self.previous_reading is not None and self.current_reading is None:
+            raise ValueError("Previous reading sirf current reading ke sath di ja sakti hai.")
+        if (
+            self.previous_reading is not None
+            and self.current_reading is not None
+            and self.current_reading <= self.previous_reading
+        ):
+            raise ValueError("Current reading previous reading se zyada honi chahiye.")
         return self
 
 
 class UsageEntryUpdate(BaseModel):
     billing_period: Optional[str] = Field(default=None, min_length=1)
+    previous_reading: Optional[float] = Field(default=None, ge=0)
     current_reading: Optional[float] = Field(default=None, ge=0)
     added_units: Optional[float] = Field(default=None, gt=0)
     bill_amount: Optional[float] = Field(default=None, ge=0)
@@ -59,9 +72,15 @@ class UsageEntryUpdate(BaseModel):
     def check_something_to_update(self):
         if all(
             v is None
-            for v in (self.billing_period, self.current_reading, self.added_units, self.bill_amount)
+            for v in (self.billing_period, self.previous_reading, self.current_reading, self.added_units, self.bill_amount)
         ):
             raise ValueError("Update karne ke liye kam az kam ek field dena zaroori hai.")
+        if (
+            self.previous_reading is not None
+            and self.current_reading is not None
+            and self.current_reading <= self.previous_reading
+        ):
+            raise ValueError("Current reading previous reading se zyada honi chahiye.")
         return self
 
 
@@ -80,6 +99,9 @@ class UsageLogResponse(BaseModel):
     new_total_units: float
     previous_reading: Optional[float] = None
     current_reading: Optional[float] = None
+    # True when previous_reading was typed in by hand (v4.4); False when
+    # the chain derived it from the previous bill's current reading.
+    previous_reading_manual: bool = False
     bill_amount: float
     payment_status: str = "UNPAID"
     paid_date: Optional[datetime] = None

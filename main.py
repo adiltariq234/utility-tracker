@@ -45,6 +45,7 @@ def _ensure_new_columns() -> None:
                 ("rate_per_unit", "ALTER TABLE usage_logs ADD COLUMN rate_per_unit FLOAT"),
                 ("due_date", "ALTER TABLE usage_logs ADD COLUMN due_date DATE"),
                 ("late_fine", "ALTER TABLE usage_logs ADD COLUMN late_fine FLOAT DEFAULT 0"),
+                ("previous_reading_manual", "ALTER TABLE usage_logs ADD COLUMN previous_reading_manual BOOLEAN DEFAULT 0"),
             ):
                 if col not in existing:
                     conn.execute(_text(ddl))
@@ -53,6 +54,7 @@ def _ensure_new_columns() -> None:
                 "ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS rate_per_unit DOUBLE PRECISION",
                 "ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS due_date DATE",
                 "ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS late_fine DOUBLE PRECISION DEFAULT 0",
+                "ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS previous_reading_manual BOOLEAN DEFAULT FALSE",
             ):
                 conn.execute(_text(ddl))
 
@@ -101,8 +103,8 @@ OPENING_PERIOD = "OPENING-BALANCE"
 
 app = FastAPI(
     title="Residential Utility Usage Tracker API",
-    description="Cumulative calculation, meter readings, paid/unpaid, edit/delete with chain recalculation, reporting. Version 4.3: no Block, fixed DB rate (Rs. 50), Settings due-day + staged late fines, due date/fine in bills and exports.",
-    version="4.3.1",
+    description="Cumulative calculation, meter readings, paid/unpaid, edit/delete with chain recalculation, reporting. Version 4.4: manual previous reading per bill (units = current - previous), bold PAID/UNPAID status, full-detail printable bill with bill number, billing date and previous outstanding balance.",
+    version="4.4.0",
 )
 
 app.add_middleware(
@@ -165,22 +167,31 @@ def recalculate_chain(db: Session, prop: models.Property) -> None:
             if log.current_reading is not None:
                 running_reading = log.current_reading
             log.previous_reading = None
+            log.previous_reading_manual = False
         elif log.current_reading is not None:
-            if log.current_reading <= running_reading:
+            # v4.4: a manually typed previous reading is kept as-is (it also
+            # covers a replaced meter whose reading restarts lower). Otherwise
+            # the previous bill's current reading is the previous reading.
+            if getattr(log, "previous_reading_manual", False) and log.previous_reading is not None:
+                base_reading = log.previous_reading
+            else:
+                base_reading = running_reading
+                log.previous_reading = running_reading
+            if log.current_reading <= base_reading:
                 db.rollback()
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         f"Entry '{log.billing_period}' (#{log.log_id}): current reading "
-                        f"{log.current_reading:,.1f} previous reading {running_reading:,.1f} se zyada honi chahiye."
+                        f"{log.current_reading:,.1f} previous reading {base_reading:,.1f} se zyada honi chahiye."
                     ),
                 )
-            log.previous_reading = running_reading
-            log.added_units = round(log.current_reading - running_reading, 4)
+            log.added_units = round(log.current_reading - base_reading, 4)
             running_reading = log.current_reading
         else:
             # Manual units entry: meter reading chain me change nahi hoti
             log.previous_reading = None
+            log.previous_reading_manual = False
 
         log.new_total_units = round(running_units + log.added_units, 4)
         running_units = log.new_total_units
@@ -964,7 +975,10 @@ def add_usage_entry(entry: schemas.UsageEntryCreate, user: models.User = Depends
     previous_units = prop.cumulative_units
 
     if entry.current_reading is not None:
-        previous_reading = prop.last_meter_reading
+        # v4.4: a manually typed previous reading wins; otherwise the home's
+        # last meter reading (previous bill's current reading) is used.
+        manual_previous = entry.previous_reading is not None
+        previous_reading = entry.previous_reading if manual_previous else prop.last_meter_reading
         if entry.current_reading <= previous_reading:
             raise HTTPException(
                 status_code=400,
@@ -979,6 +993,7 @@ def add_usage_entry(entry: schemas.UsageEntryCreate, user: models.User = Depends
         previous_reading = None
         current_reading = None
         units = entry.added_units
+        manual_previous = False
 
     usage_log = models.UsageLog(
         property_id=prop_id,
@@ -988,6 +1003,7 @@ def add_usage_entry(entry: schemas.UsageEntryCreate, user: models.User = Depends
         new_total_units=round(previous_units + units, 4),
         previous_reading=previous_reading,
         current_reading=current_reading,
+        previous_reading_manual=manual_previous,
         # Fixed rate from Settings (stored in the DB). The bill_amount sent
         # by the client is deliberately ignored: bill = units x fixed rate,
         # so the rate can never drift from the entry screen or a refresh.
@@ -1021,12 +1037,23 @@ def update_usage_entry(log_id: int, payload: schemas.UsageEntryUpdate, user: mod
     # units x its own frozen rate_per_unit (old bills: frozen rate if
     # present, otherwise the current Settings rate).
 
+    # v4.4: previous reading can be corrected by hand. It only applies to
+    # meter-reading entries; the chain keeps a hand-typed value as-is.
+    if payload.previous_reading is not None:
+        if log.current_reading is None and payload.current_reading is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Previous reading sirf meter-reading entry par set ho sakti hai.",
+            )
+        log.previous_reading = payload.previous_reading
+        log.previous_reading_manual = True
     if payload.current_reading is not None:
         log.current_reading = payload.current_reading
     elif payload.added_units is not None:
         log.added_units = payload.added_units
         log.current_reading = None
         log.previous_reading = None
+        log.previous_reading_manual = False
 
     log.updated_at = now_utc()
     db.flush()
@@ -1036,7 +1063,7 @@ def update_usage_entry(log_id: int, payload: schemas.UsageEntryUpdate, user: mod
     settings = get_settings(db)
     rate = log.rate_per_unit if log.rate_per_unit is not None else settings["rate_per_unit"]
     log.rate_per_unit = rate
-    if payload.current_reading is not None or payload.added_units is not None:
+    if payload.current_reading is not None or payload.added_units is not None or payload.previous_reading is not None:
         log.bill_amount = round(log.added_units * rate, 2)
     db.flush()
     recalculate_chain(db, prop)
@@ -1242,6 +1269,7 @@ def build_export_tables(db: Session):
     logs_rows = [
         [
             l.log_id, l.property_id, l.billing_period, l.previous_reading, l.current_reading,
+            "Yes" if getattr(l, "previous_reading_manual", False) else "No",
             l.previous_total_units, l.added_units, l.new_total_units,
             l.rate_per_unit, l.bill_amount,
             l.due_date.isoformat() if l.due_date else "",
@@ -1269,7 +1297,7 @@ def build_export_tables(db: Session):
             "All_Usage_History",
             [
                 "Entry #", "Home ID", "Billing Period", "Previous Reading", "Current Reading",
-                "Previous Total Units", "Added Units", "New Cumulative Total",
+                "Prev. Reading Manual?", "Previous Total Units", "Added Units", "New Cumulative Total",
                 "Rate per Unit (Rs.)", "Bill Amount (Rs.)", "Due Date",
                 "Late Fine (Rs.)", "Total Payable (Rs.)",
                 "Status", "Paid Date", "Entry Date", "Edited At",
